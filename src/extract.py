@@ -1,16 +1,13 @@
 
+import argparse
 import json
-from datetime import datetime, timezone
+from datetime import date
 from pathlib import Path
 
 import requests
 
 BASE_URL = "https://api.erg.ic.ac.uk/AirQuality"
-
 RAW_DIR = Path("data/raw")
-
-START_DATE = "2026-10-01"
-END_DATE = "2026-10-08"
 
 STATIONS = {
     "BL0": "Camden - Bloomsbury",
@@ -40,7 +37,6 @@ def save_json(data, filepath):
 
 def extract_sites():
     endpoint = "Information/MonitoringSites/GroupName=London/Json"
-
     data = fetch_json(endpoint)
 
     filepath = RAW_DIR / "monitoring_sites.json"
@@ -51,7 +47,6 @@ def extract_sites():
 
 def extract_site_species():
     endpoint = "Information/MonitoringSiteSpecies/GroupName=London/Json"
-
     data = fetch_json(endpoint)
 
     filepath = RAW_DIR / "site_species.json"
@@ -60,26 +55,31 @@ def extract_site_species():
     print(f"Saved site-pollutant metadata: {filepath}")
 
 
-def extract_measurements():
+def extract_measurements(start_date, end_date):
     for site_code, site_name in STATIONS.items():
         for pollutant in POLLUTANTS:
             endpoint = (
                 f"Data/SiteSpecies/SiteCode={site_code}/"
                 f"SpeciesCode={pollutant}/"
-                f"StartDate={START_DATE}/EndDate={END_DATE}/Json"
+                f"StartDate={start_date}/EndDate={end_date}/Json"
             )
-
-            data = fetch_json(endpoint)
 
             filename = (
                 f"{site_code}_{pollutant}_"
-                f"{START_DATE}_{END_DATE}.json"
+                f"{start_date}_{end_date}.json"
             )
 
             filepath = RAW_DIR / "measurements" / filename
+
+            if filepath.exists():
+                print(f"Already saved, skipping: {filename}")
+                continue
+
+            data = fetch_json(endpoint)
             save_json(data, filepath)
 
             readings = data.get("RawAQData", {}).get("Data", [])
+
             if isinstance(readings, dict):
                 readings = [readings]
 
@@ -90,13 +90,36 @@ def extract_measurements():
 
 
 def main():
-    print("Starting AirLens extraction\n")
+    parser = argparse.ArgumentParser(
+        description="Extract London air quality data"
+    )
 
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    parser.add_argument(
+        "--start",
+        default="2026-10-01",
+        help="Start date in YYYY-MM-DD format"
+    )
+
+    parser.add_argument(
+        "--end",
+        default="2026-10-08",
+        help="Exclusive end date in YYYY-MM-DD format"
+    )
+
+    args = parser.parse_args()
+
+    start_date = date.fromisoformat(args.start)
+    end_date = date.fromisoformat(args.end)
+
+    if end_date <= start_date:
+        parser.error("End date must be after start date")
+
+    print("Starting AirLens extraction")
+    print(f"Period: {start_date} to {end_date} (end exclusive)\n")
 
     extract_sites()
     extract_site_species()
-    extract_measurements()
+    extract_measurements(start_date, end_date)
 
     print("\nExtraction complete")
 
