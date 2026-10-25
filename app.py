@@ -1,9 +1,12 @@
 
+from datetime import datetime, time, timedelta
 from pathlib import Path
 
 import duckdb
 import pandas as pd
 import streamlit as st
+
+from src.quality import classify_coverage, classify_freshness
 
 
 DB_PATH = Path("data/processed/airlens.duckdb")
@@ -52,7 +55,9 @@ readings["measured_at"] = pd.to_datetime(readings["measured_at"])
 
 st.sidebar.header("Filters")
 
-pollutants = sorted(readings["pollutant_code"].dropna().unique().tolist())
+pollutants = sorted(
+    readings["pollutant_code"].dropna().unique().tolist()
+)
 selected_pollutant = st.sidebar.selectbox("Pollutant", pollutants)
 
 pollutant_data = readings[
@@ -75,7 +80,9 @@ if len(selected_dates) != 2:
 
 start_date, end_date = selected_dates
 
-station_names = sorted(pollutant_data["site_name"].dropna().unique().tolist())
+station_names = sorted(
+    pollutant_data["site_name"].dropna().unique().tolist()
+)
 
 selected_stations = st.sidebar.multiselect(
     "Monitoring stations",
@@ -104,13 +111,20 @@ summary = (
         average_value=("value", "mean"),
         valid_hours=("value", "count"),
         returned_hours=("measured_at", "nunique"),
-        latest_valid_reading=(
-            "measured_at",
-            lambda x: x[filtered.loc[x.index, "value"].notna()].max()
-            if filtered.loc[x.index, "value"].notna().any()
-            else pd.NaT,
-        ),
     )
+)
+
+latest_readings = (
+    filtered.dropna(subset=["value"])
+    .groupby("site_code")["measured_at"]
+    .max()
+    .rename("latest_valid_reading")
+)
+
+summary = summary.merge(
+    latest_readings,
+    on="site_code",
+    how="left",
 )
 
 summary["expected_hours"] = expected_hours
@@ -121,18 +135,31 @@ summary["completeness_pct"] = (
 
 summary["average_value"] = summary["average_value"].round(2)
 
-def quality_label(coverage):
-    if coverage >= 90:
-        return "Good coverage"
-    if coverage >= 75:
-        return "Partial coverage"
-    return "Low coverage"
+summary["data_quality"] = summary.apply(
+    lambda row: classify_coverage(
+        row["valid_hours"],
+        row["expected_hours"],
+    ),
+    axis=1,
+)
 
+# The selected end date includes the entire final day.
+period_end = datetime.combine(
+    end_date + timedelta(days=1),
+    time.min,
+)
 
-summary["data_quality"] = summary["completeness_pct"].apply(quality_label)
+summary["freshness"] = summary["latest_valid_reading"].apply(
+    lambda latest: (
+        "No valid readings"
+        if pd.isna(latest)
+        else classify_freshness(latest, period_end)
+    )
+)
 
 summary = summary.sort_values(
-    "completeness_pct", ascending=False
+    "completeness_pct",
+    ascending=False,
 )
 
 st.caption(
@@ -141,14 +168,17 @@ st.caption(
     f"Expected hours per station: {expected_hours}"
 )
 
-good_count = (summary["completeness_pct"] >= 90).sum()
-low_count = (summary["completeness_pct"] < 75).sum()
+good_count = (summary["data_quality"] == "Good coverage").sum()
+moderate_count = (summary["data_quality"] == "Moderate coverage").sum()
+low_count = (summary["data_quality"] == "Low coverage").sum()
+no_data_count = (summary["data_quality"] == "No valid data").sum()
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
-col1.metric("Stations selected", len(summary))
-col2.metric("Good coverage", int(good_count))
+col1.metric("Good coverage", int(good_count))
+col2.metric("Moderate coverage", int(moderate_count))
 col3.metric("Low coverage", int(low_count))
+col4.metric("No valid data", int(no_data_count))
 
 st.subheader("Station comparison")
 
@@ -162,6 +192,7 @@ st.dataframe(
             "expected_hours",
             "completeness_pct",
             "data_quality",
+            "freshness",
             "latest_valid_reading",
         ]
     ],
@@ -169,13 +200,25 @@ st.dataframe(
     hide_index=True,
 )
 
-low_coverage = summary[summary["completeness_pct"] < 75]
+unreliable = summary[
+    summary["data_quality"].isin(
+        ["Low coverage", "No valid data"]
+    )
+]
 
-if not low_coverage.empty:
+if not unreliable.empty:
     st.warning(
-        f"{len(low_coverage)} station(s) have less than 75% "
-        "valid hourly data. Their averages may not be representative "
-        "of the selected period."
+        f"{len(unreliable)} station(s) have less than 75% "
+        "valid hourly data. Their averages may be missing or "
+        "unrepresentative of the selected period."
+    )
+
+outdated = summary[summary["freshness"] == "Outdated"]
+
+if not outdated.empty:
+    st.info(
+        f"{len(outdated)} station(s) have no valid readings "
+        "within the final two days of the selected period."
     )
 
 st.subheader("Average pollutant measurements")
@@ -184,7 +227,10 @@ chart_data = summary[
     summary["average_value"].notna()
 ].set_index("site_name")["average_value"]
 
-st.bar_chart(chart_data, horizontal=True)
+if chart_data.empty:
+    st.info("No valid averages available.")
+else:
+    st.bar_chart(chart_data, horizontal=True)
 
 st.subheader("Data completeness (%)")
 
@@ -212,6 +258,13 @@ else:
         values="value",
     )
     st.line_chart(trend_chart)
+
+st.caption(
+    "Coverage categories use project-defined thresholds. "
+    "Freshness indicates whether a station has a valid reading "
+    "within the final two days of the selected period; it is "
+    "not a live reporting-status check."
+)
 
 st.info(
     "These readings represent individual monitoring stations, not "
