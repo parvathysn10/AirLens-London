@@ -218,3 +218,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# AirLens virtual environment
+.venv/
+
+# Local DuckDB database
+*.duckdb
+*.duckdb.wal
+
+# Local processed data
+data/processed/
+
+# Environment variables and secrets
+.env
