@@ -58,7 +58,11 @@ st.sidebar.header("Filters")
 pollutants = sorted(
     readings["pollutant_code"].dropna().unique().tolist()
 )
-selected_pollutant = st.sidebar.selectbox("Pollutant", pollutants)
+
+selected_pollutant = st.sidebar.selectbox(
+    "Pollutant",
+    pollutants,
+)
 
 pollutant_data = readings[
     readings["pollutant_code"] == selected_pollutant
@@ -143,7 +147,7 @@ summary["data_quality"] = summary.apply(
     axis=1,
 )
 
-# The selected end date includes the entire final day.
+# Include the entire final day when checking freshness.
 period_end = datetime.combine(
     end_date + timedelta(days=1),
     time.min,
@@ -213,7 +217,9 @@ if not unreliable.empty:
         "unrepresentative of the selected period."
     )
 
-outdated = summary[summary["freshness"] == "Outdated"]
+outdated = summary[
+    summary["freshness"] == "Outdated"
+]
 
 if not outdated.empty:
     st.info(
@@ -221,16 +227,31 @@ if not outdated.empty:
         "within the final two days of the selected period."
     )
 
+reliable_only = st.checkbox(
+    "Only show stations with at least 75% data coverage in charts",
+    value=True,
+)
+
+chart_summary = summary.copy()
+
+if reliable_only:
+    chart_summary = chart_summary[
+        chart_summary["completeness_pct"] >= 75
+    ]
+
 st.subheader("Average pollutant measurements")
 
-chart_data = summary[
-    summary["average_value"].notna()
+chart_data = chart_summary[
+    chart_summary["average_value"].notna()
 ].set_index("site_name")["average_value"]
 
 if chart_data.empty:
-    st.info("No valid averages available.")
+    st.info("No stations meet the selected coverage requirement.")
 else:
-    st.bar_chart(chart_data, horizontal=True)
+    st.bar_chart(
+        chart_data,
+        horizontal=True,
+    )
 
 st.subheader("Data completeness (%)")
 
@@ -241,11 +262,17 @@ st.bar_chart(
 
 st.subheader("Historical trends")
 
-trend_data = filtered.dropna(subset=["value"]).copy()
+trend_data = filtered[
+    filtered["site_code"].isin(chart_summary["site_code"])
+].dropna(subset=["value"]).copy()
+
 trend_data["date"] = trend_data["measured_at"].dt.date
 
 daily = (
-    trend_data.groupby(["date", "site_name"], as_index=False)["value"]
+    trend_data.groupby(
+        ["date", "site_name"],
+        as_index=False,
+    )["value"]
     .mean()
 )
 
@@ -257,6 +284,7 @@ else:
         columns="site_name",
         values="value",
     )
+
     st.line_chart(trend_chart)
 
 st.caption(
