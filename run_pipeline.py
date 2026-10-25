@@ -64,9 +64,20 @@ def main():
     )
 
     run_script("src/transform.py")
-    run_script("src/analyze.py")
 
-    print("\nAirLens London pipeline completed successfully")
+    run_script(
+        "src/analyse.py",
+        [
+            "--start", str(start_date),
+            "--end", str(end_date),
+            "--pollutant", "NO2",
+        ],
+    )
+
+    print(
+        "\nAirLens London pipeline completed successfully",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

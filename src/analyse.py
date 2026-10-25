@@ -1,15 +1,45 @@
 
+import argparse
+from datetime import date
 from pathlib import Path
 
 import duckdb
 
 DB_PATH = Path("data/processed/airlens.duckdb")
 
-START_DATE = "2026-10-01"
-END_DATE = "2026-10-08"
-
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Analyse historical London air quality measurements"
+    )
+
+    parser.add_argument(
+        "--start",
+        default="2026-10-01",
+        help="Start date in YYYY-MM-DD format",
+    )
+
+    parser.add_argument(
+        "--end",
+        default="2026-10-08",
+        help="Exclusive end date in YYYY-MM-DD format",
+    )
+
+    parser.add_argument(
+        "--pollutant",
+        default="NO2",
+        help="Pollutant code to analyse",
+    )
+
+    args = parser.parse_args()
+
+    start_date = date.fromisoformat(args.start)
+    end_date = date.fromisoformat(args.end)
+    pollutant = args.pollutant.upper()
+
+    if end_date <= start_date:
+        parser.error("End date must be after start date")
+
     if not DB_PATH.exists():
         print("Database not found. Run python src/transform.py first.")
         return
@@ -34,7 +64,7 @@ def main():
                     ON m.site_code = s.site_code
                 WHERE m.measured_at >= ?
                   AND m.measured_at < ?
-                  AND m.pollutant_code = 'NO2'
+                  AND m.pollutant_code = ?
                 GROUP BY
                     s.site_code,
                     s.site_name,
@@ -55,14 +85,23 @@ def main():
 
         results = con.execute(
             query,
-            [START_DATE, END_DATE, START_DATE, END_DATE]
+            [
+                start_date,
+                end_date,
+                pollutant,
+                start_date,
+                end_date,
+            ],
         ).fetchdf()
 
         print("\nAIRLENS - STATION COMPARISON")
-        print(f"Period: {START_DATE} to {END_DATE} (end exclusive)")
-        print("Pollutant: NO2\n")
+        print(f"Period: {start_date} to {end_date} (end exclusive)")
+        print(f"Pollutant: {pollutant}\n")
 
-        print(results.to_string(index=False))
+        if results.empty:
+            print("No measurements found for the selected period.")
+        else:
+            print(results.to_string(index=False))
 
     finally:
         con.close()
@@ -70,4 +109,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
