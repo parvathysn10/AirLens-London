@@ -1,6 +1,6 @@
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
@@ -20,6 +20,18 @@ def as_list(value):
     if isinstance(value, list):
         return value
     return [value]
+
+
+def parse_date(value):
+    if not value:
+        return None
+    return datetime.strptime(value[:10], "%Y-%m-%d").date()
+
+
+def parse_number(value):
+    if value in ("", None):
+        return None
+    return float(value)
 
 
 def create_tables(con):
@@ -57,17 +69,16 @@ def create_tables(con):
         )
     """)
 
-
-def parse_date(value):
-    if not value:
-        return None
-    return datetime.strptime(value[:10], "%Y-%m-%d").date()
-
-
-def parse_number(value):
-    if value in ("", None):
-        return None
-    return float(value)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS ingestion_runs (
+            run_id VARCHAR PRIMARY KEY,
+            started_at TIMESTAMP,
+            inserted INTEGER,
+            updated INTEGER,
+            unchanged INTEGER,
+            rejected INTEGER
+        )
+    """)
 
 
 def load_sites(con):
@@ -128,66 +139,125 @@ def load_site_pollutants(con):
     print(f"Loaded {count} site-pollutant records")
 
 
-def load_measurements(con):
-    files = sorted((RAW_DIR / "measurements").glob("*.json"))
-    total = 0
+def measurement_files():
+    files = list((RAW_DIR / "measurements").glob("*.json"))
 
-    for filepath in files:
+    # Original files have no download timestamp in their names
+    def snapshot_order(filepath):
+        parts = filepath.stem.split("_")
+        snapshot_time = parts[4] if len(parts) > 4 else ""
+        return (snapshot_time, filepath.name)
+
+    return sorted(files, key=snapshot_order)
+
+
+def load_measurements(con):
+    counts = {
+        "inserted": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "rejected": 0
+    }
+
+    for filepath in measurement_files():
         data = load_json(filepath)
         raw = data["RawAQData"]
 
         site_code = raw["@SiteCode"]
         pollutant_code = raw["@SpeciesCode"]
 
-        readings = as_list(raw.get("Data"))
+        for reading in as_list(raw.get("Data")):
+            try:
+                timestamp = reading["@MeasurementDateGMT"]
+                measured_at = datetime.strptime(
+                    timestamp, "%Y-%m-%d %H:%M:%S"
+                )
+                value = parse_number(reading.get("@Value"))
 
-        for reading in readings:
-            timestamp = reading.get("@MeasurementDateGMT")
-
-            if not timestamp:
+            except (KeyError, ValueError, TypeError):
+                counts["rejected"] += 1
                 continue
 
-            measured_at = datetime.strptime(
-                timestamp, "%Y-%m-%d %H:%M:%S"
-            )
-
-            value = parse_number(reading.get("@Value"))
-
-            con.execute("""
-                INSERT INTO measurements
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT (site_code, pollutant_code, measured_at)
-                DO UPDATE SET
-                    value = EXCLUDED.value
+            existing = con.execute("""
+                SELECT value
+                FROM measurements
+                WHERE site_code = ?
+                  AND pollutant_code = ?
+                  AND measured_at = ?
             """, [
-                site_code,
-                pollutant_code,
-                measured_at,
-                value
-            ])
+                site_code, pollutant_code, measured_at
+            ]).fetchone()
 
-            total += 1
+            if existing is None:
+                con.execute("""
+                    INSERT INTO measurements
+                    VALUES (?, ?, ?, ?)
+                """, [
+                    site_code, pollutant_code, measured_at, value
+                ])
+                counts["inserted"] += 1
 
-    print(f"Processed {total} measurement records")
+            elif existing[0] == value or (
+                existing[0] is None and value is None
+            ):
+                counts["unchanged"] += 1
+
+            else:
+                con.execute("""
+                    UPDATE measurements
+                    SET value = ?
+                    WHERE site_code = ?
+                      AND pollutant_code = ?
+                      AND measured_at = ?
+                """, [
+                    value, site_code, pollutant_code, measured_at
+                ])
+                counts["updated"] += 1
+
+    return counts
 
 
 def main():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+    started_at = datetime.now(timezone.utc)
+    run_id = started_at.strftime("%Y%m%dT%H%M%S%fZ")
+
     con = duckdb.connect(str(DB_PATH))
 
     try:
+        con.execute("BEGIN TRANSACTION")
+
         create_tables(con)
         load_sites(con)
         load_site_pollutants(con)
-        load_measurements(con)
+
+        counts = load_measurements(con)
+
+        con.execute("""
+            INSERT INTO ingestion_runs
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, [
+            run_id,
+            started_at.replace(tzinfo=None),
+            counts["inserted"],
+            counts["updated"],
+            counts["unchanged"],
+            counts["rejected"]
+        ])
+
+        con.execute("COMMIT")
+
+        print("\nINGESTION SUMMARY")
+        for name, count in counts.items():
+            print(f"{name.capitalize()}: {count}")
 
         print("\nDATABASE SUMMARY")
-
         for table in [
             "monitoring_sites",
             "site_pollutants",
-            "measurements"
+            "measurements",
+            "ingestion_runs"
         ]:
             count = con.execute(
                 f"SELECT COUNT(*) FROM {table}"
@@ -195,9 +265,14 @@ def main():
 
             print(f"{table}: {count} rows")
 
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+
     finally:
         con.close()
 
 
 if __name__ == "__main__":
     main()
+
