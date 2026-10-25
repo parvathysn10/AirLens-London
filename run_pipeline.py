@@ -41,6 +41,12 @@ def main():
         help="Exclusive end date in YYYY-MM-DD format",
     )
 
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Download fresh measurement snapshots without overwriting originals",
+    )
+
     args = parser.parse_args()
 
     start_date = date.fromisoformat(args.start)
@@ -55,13 +61,15 @@ def main():
         flush=True,
     )
 
-    run_script(
-        "src/extract.py",
-        [
-            "--start", str(start_date),
-            "--end", str(end_date),
-        ],
-    )
+    extract_args = [
+        "--start", str(start_date),
+        "--end", str(end_date),
+    ]
+
+    if args.refresh:
+        extract_args.append("--refresh")
+
+    run_script("src/extract.py", extract_args)
 
     run_script("src/transform.py")
 

@@ -1,7 +1,7 @@
 
 import argparse
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import requests
@@ -55,7 +55,7 @@ def extract_site_species():
     print(f"Saved site-pollutant metadata: {filepath}")
 
 
-def extract_measurements(start_date, end_date):
+def extract_measurements(start_date, end_date, refresh=False):
     for site_code, site_name in STATIONS.items():
         for pollutant in POLLUTANTS:
             endpoint = (
@@ -71,11 +71,24 @@ def extract_measurements(start_date, end_date):
 
             filepath = RAW_DIR / "measurements" / filename
 
-            if filepath.exists():
+            if filepath.exists() and not refresh:
                 print(f"Already saved, skipping: {filename}")
                 continue
 
             data = fetch_json(endpoint)
+
+            if refresh:
+                timestamp = datetime.now(timezone.utc).strftime(
+                    "%Y%m%dT%H%M%S%fZ"
+                )
+
+                filename = (
+                    f"{site_code}_{pollutant}_"
+                    f"{start_date}_{end_date}_{timestamp}.json"
+                )
+
+                filepath = RAW_DIR / "measurements" / filename
+
             save_json(data, filepath)
 
             readings = data.get("RawAQData", {}).get("Data", [])
@@ -97,13 +110,19 @@ def main():
     parser.add_argument(
         "--start",
         default="2026-10-01",
-        help="Start date in YYYY-MM-DD format"
+        help="Start date in YYYY-MM-DD format",
     )
 
     parser.add_argument(
         "--end",
         default="2026-10-08",
-        help="Exclusive end date in YYYY-MM-DD format"
+        help="Exclusive end date in YYYY-MM-DD format",
+    )
+
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Download new snapshots without overwriting originals",
     )
 
     args = parser.parse_args()
@@ -119,7 +138,7 @@ def main():
 
     extract_sites()
     extract_site_species()
-    extract_measurements(start_date, end_date)
+    extract_measurements(start_date, end_date, args.refresh)
 
     print("\nExtraction complete")
 
