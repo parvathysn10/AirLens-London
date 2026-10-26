@@ -2,6 +2,7 @@
 from datetime import datetime, time, timedelta
 from pathlib import Path
 
+import altair as alt
 import duckdb
 import pandas as pd
 import streamlit as st
@@ -19,12 +20,13 @@ st.set_page_config(
 
 st.title("AirLens London")
 st.write(
-    "Compare historical air pollution measurements across London "
-    "monitoring stations, with data quality clearly shown."
+    "Explore historical air pollution measurements across London "
+    "monitoring stations, with data completeness and freshness "
+    "shown alongside the results."
 )
 
 if not DB_PATH.exists():
-    st.error("Database not found. Run python src/transform.py first.")
+    st.error("Database not found. Run python run_pipeline.py first.")
     st.stop()
 
 con = duckdb.connect(str(DB_PATH), read_only=True)
@@ -78,26 +80,40 @@ selected_dates = st.sidebar.date_input(
     max_value=max_date,
 )
 
-if len(selected_dates) != 2:
+if not isinstance(selected_dates, (tuple, list)) or len(selected_dates) != 2:
     st.info("Select both a start date and an end date.")
     st.stop()
 
 start_date, end_date = selected_dates
 
-station_names = sorted(
-    pollutant_data["site_name"].dropna().unique().tolist()
+station_options = (
+    pollutant_data[
+        ["site_code", "site_name"]
+    ]
+    .drop_duplicates()
+    .sort_values("site_name")
 )
 
-selected_stations = st.sidebar.multiselect(
+station_labels = {
+    row.site_code: f"{row.site_name} ({row.site_code})"
+    for row in station_options.itertuples(index=False)
+}
+
+selected_codes = st.sidebar.multiselect(
     "Monitoring stations",
-    station_names,
-    default=station_names,
+    options=list(station_labels),
+    default=list(station_labels),
+    format_func=lambda code: station_labels[code],
 )
+
+if not selected_codes:
+    st.info("Select at least one monitoring station.")
+    st.stop()
 
 filtered = pollutant_data[
     (pollutant_data["measured_at"].dt.date >= start_date)
     & (pollutant_data["measured_at"].dt.date <= end_date)
-    & (pollutant_data["site_name"].isin(selected_stations))
+    & (pollutant_data["site_code"].isin(selected_codes))
 ].copy()
 
 if filtered.empty:
@@ -132,6 +148,9 @@ summary = summary.merge(
 )
 
 summary["expected_hours"] = expected_hours
+summary["missing_hours"] = (
+    expected_hours - summary["valid_hours"]
+)
 
 summary["completeness_pct"] = (
     summary["valid_hours"] / expected_hours * 100
@@ -147,7 +166,6 @@ summary["data_quality"] = summary.apply(
     axis=1,
 )
 
-# Include the entire final day when checking freshness.
 period_end = datetime.combine(
     end_date + timedelta(days=1),
     time.min,
@@ -164,57 +182,150 @@ summary["freshness"] = summary["latest_valid_reading"].apply(
 summary = summary.sort_values(
     "completeness_pct",
     ascending=False,
+).reset_index(drop=True)
+
+summary["chart_label"] = summary.apply(
+    lambda row: f"{row['local_authority']} ({row['site_code']})",
+    axis=1,
 )
 
 st.caption(
-    f"Period: {start_date} to {end_date} | "
+    f"Reporting period: {start_date:%d %b %Y} to "
+    f"{end_date:%d %b %Y} | "
     f"Pollutant: {selected_pollutant} | "
     f"Expected hours per station: {expected_hours}"
 )
 
-good_count = (summary["data_quality"] == "Good coverage").sum()
-moderate_count = (summary["data_quality"] == "Moderate coverage").sum()
-low_count = (summary["data_quality"] == "Low coverage").sum()
-no_data_count = (summary["data_quality"] == "No valid data").sum()
+st.divider()
+
+st.subheader("Data quality overview")
+
+good_count = int(
+    (summary["data_quality"] == "Good coverage").sum()
+)
+moderate_count = int(
+    (summary["data_quality"] == "Moderate coverage").sum()
+)
+low_count = int(
+    (summary["data_quality"] == "Low coverage").sum()
+)
+no_data_count = int(
+    (summary["data_quality"] == "No valid data").sum()
+)
 
 col1, col2, col3, col4 = st.columns(4)
 
-col1.metric("Good coverage", int(good_count))
-col2.metric("Moderate coverage", int(moderate_count))
-col3.metric("Low coverage", int(low_count))
-col4.metric("No valid data", int(no_data_count))
+col1.metric("Good coverage", good_count)
+col2.metric("Moderate coverage", moderate_count)
+col3.metric("Low coverage", low_count)
+col4.metric("No valid data", no_data_count)
+
+st.caption(
+    "Coverage measures the percentage of expected hourly "
+    "observations that contain a valid measurement."
+)
+
+st.subheader("Key findings")
+
+valid_stations = summary[
+    summary["average_value"].notna()
+].copy()
+
+reliable_stations = summary[
+    summary["completeness_pct"] >= 75
+].copy()
+
+if not reliable_stations.empty:
+    best_coverage = reliable_stations.sort_values(
+        "completeness_pct",
+        ascending=False,
+    ).iloc[0]
+
+    st.write(
+        f"**Best data coverage:** {best_coverage['site_name']} "
+        f"has {best_coverage['completeness_pct']:.1f}% "
+        "complete hourly data for the selected period."
+    )
+
+if not valid_stations.empty:
+    lowest_coverage = valid_stations.sort_values(
+        "completeness_pct"
+    ).iloc[0]
+
+    if lowest_coverage["completeness_pct"] < 75:
+        st.write(
+            f"**Comparison caution:** "
+            f"{lowest_coverage['site_name']} has only "
+            f"{lowest_coverage['completeness_pct']:.1f}% "
+            "complete data. Its average may not represent "
+            "the full reporting period."
+        )
+
+missing_stations = summary[
+    summary["valid_hours"] == 0
+]
+
+if not missing_stations.empty:
+    st.write(
+        f"**Missing measurements:** "
+        f"{len(missing_stations)} selected station(s) have "
+        "no valid readings for this period."
+    )
+
+if (
+    reliable_stations.empty
+    and missing_stations.empty
+    and valid_stations.empty
+):
+    st.info("No valid measurements are available for this selection.")
+
+st.divider()
 
 st.subheader("Station comparison")
 
+display_columns = {
+    "site_name": "Monitoring station",
+    "site_type": "Site type",
+    "average_value": "Average NO₂" if selected_pollutant == "NO2"
+                     else f"Average {selected_pollutant}",
+    "valid_hours": "Valid hours",
+    "missing_hours": "Missing hours",
+    "expected_hours": "Expected hours",
+    "completeness_pct": "Coverage (%)",
+    "data_quality": "Data quality",
+    "freshness": "Freshness",
+    "latest_valid_reading": "Latest valid reading",
+}
+
+display_table = summary[
+    list(display_columns)
+].rename(columns=display_columns)
+
 st.dataframe(
-    summary[
-        [
-            "site_name",
-            "site_type",
-            "average_value",
-            "valid_hours",
-            "expected_hours",
-            "completeness_pct",
-            "data_quality",
-            "freshness",
-            "latest_valid_reading",
-        ]
-    ],
+    display_table,
     width="stretch",
     hide_index=True,
+    column_config={
+        "Coverage (%)": st.column_config.NumberColumn(
+            "Coverage (%)",
+            format="%.1f%%",
+        ),
+        "Latest valid reading": st.column_config.DatetimeColumn(
+            "Latest valid reading",
+            format="DD MMM YYYY, HH:mm",
+        ),
+    },
 )
 
 unreliable = summary[
-    summary["data_quality"].isin(
-        ["Low coverage", "No valid data"]
-    )
+    summary["completeness_pct"] < 75
 ]
 
 if not unreliable.empty:
     st.warning(
         f"{len(unreliable)} station(s) have less than 75% "
-        "valid hourly data. Their averages may be missing or "
-        "unrepresentative of the selected period."
+        "valid hourly data. Their averages may be missing "
+        "or unrepresentative of the selected period."
     )
 
 outdated = summary[
@@ -227,8 +338,13 @@ if not outdated.empty:
         "within the final two days of the selected period."
     )
 
+st.divider()
+
+st.subheader("Pollution comparison")
+
 reliable_only = st.checkbox(
-    "Only show stations with at least 75% data coverage in charts",
+    "Only include stations with at least 75% data coverage "
+    "in pollution charts",
     value=True,
 )
 
@@ -239,28 +355,119 @@ if reliable_only:
         chart_summary["completeness_pct"] >= 75
     ]
 
-st.subheader("Average pollutant measurements")
+st.markdown("#### Average pollutant measurements")
 
-chart_data = chart_summary[
-    chart_summary["average_value"].notna()
-].set_index("site_name")["average_value"]
-
-if chart_data.empty:
-    st.info("No stations meet the selected coverage requirement.")
-else:
-    st.bar_chart(
-        chart_data,
-        horizontal=True,
-    )
-
-st.subheader("Data completeness (%)")
-
-st.bar_chart(
-    summary.set_index("site_name")["completeness_pct"],
-    horizontal=True,
+st.caption(
+    "Average of valid hourly measurements during the selected period. "
+    "Stations with missing data may have less representative averages."
 )
 
-st.subheader("Historical trends")
+average_data = chart_summary.dropna(
+    subset=["average_value"]
+).copy()
+
+if average_data.empty:
+    st.info("No stations meet the selected coverage requirement.")
+else:
+    average_chart = (
+        alt.Chart(average_data)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                "average_value:Q",
+                title="Average measurement",
+                scale=alt.Scale(zero=True),
+            ),
+            y=alt.Y(
+                "chart_label:N",
+                title="Monitoring station",
+                sort="-x",
+            ),
+            tooltip=[
+                alt.Tooltip(
+                    "site_name:N",
+                    title="Station",
+                ),
+                alt.Tooltip(
+                    "average_value:Q",
+                    title="Average",
+                    format=".2f",
+                ),
+                alt.Tooltip(
+                    "completeness_pct:Q",
+                    title="Coverage (%)",
+                    format=".1f",
+                ),
+            ],
+        )
+        .properties(
+            height=max(160, len(average_data) * 45)
+        )
+    )
+
+    st.altair_chart(
+        average_chart,
+        width="stretch",
+    )
+
+st.markdown("#### Data completeness")
+
+st.caption(
+    "Percentage of expected hours containing a valid measurement. "
+    "All selected stations are shown, including those excluded "
+    "from the pollution charts."
+)
+
+coverage_chart = (
+    alt.Chart(summary)
+    .mark_bar()
+    .encode(
+        x=alt.X(
+            "completeness_pct:Q",
+            title="Valid hourly measurements (%)",
+            scale=alt.Scale(domain=[0, 100]),
+        ),
+        y=alt.Y(
+            "chart_label:N",
+            title="Monitoring station",
+            sort="-x",
+        ),
+        tooltip=[
+            alt.Tooltip(
+                "site_name:N",
+                title="Station",
+            ),
+            alt.Tooltip(
+                "valid_hours:Q",
+                title="Valid hours",
+            ),
+            alt.Tooltip(
+                "expected_hours:Q",
+                title="Expected hours",
+            ),
+            alt.Tooltip(
+                "completeness_pct:Q",
+                title="Coverage (%)",
+                format=".1f",
+            ),
+        ],
+    )
+    .properties(
+        height=max(200, len(summary) * 45)
+    )
+)
+
+st.altair_chart(
+    coverage_chart,
+    width="stretch",
+)
+
+st.markdown("#### Historical trends")
+
+st.caption(
+    "Daily averages calculated from available valid hourly "
+    "measurements. Days with limited coverage may be less representative."
+)
 
 trend_data = filtered[
     filtered["site_code"].isin(chart_summary["site_code"])
@@ -270,7 +477,7 @@ trend_data["date"] = trend_data["measured_at"].dt.date
 
 daily = (
     trend_data.groupby(
-        ["date", "site_name"],
+        ["date", "site_code"],
         as_index=False,
     )["value"]
     .mean()
@@ -281,21 +488,63 @@ if daily.empty:
 else:
     trend_chart = daily.pivot(
         index="date",
-        columns="site_name",
+        columns="site_code",
         values="value",
     )
 
-    st.line_chart(trend_chart)
+    trend_chart = trend_chart.rename(
+        columns={
+            code: station_labels[code]
+            for code in trend_chart.columns
+        }
+    )
+
+    st.line_chart(
+        trend_chart,
+        x_label="Date",
+        y_label="Daily average measurement",
+    )
+
+st.divider()
+
+with st.expander("How to interpret the data"):
+    st.markdown("""
+**Data completeness**
+
+Completeness is the percentage of expected hourly observations
+that contain a valid numerical measurement.
+
+- Good coverage: at least 90%.
+- Moderate coverage: 75% to below 90%.
+- Low coverage: above 0% to below 75%.
+- No valid data: 0%.
+
+These thresholds are defined for AirLens London and are not
+official LAQN data-quality ratings.
+
+**Freshness**
+
+Freshness indicates whether a station has a valid measurement
+within the final two days of the selected reporting period.
+
+It does not indicate whether a station is reporting live data.
+
+**Monitoring environments**
+
+Roadside, urban background and suburban monitoring stations
+measure different environments. Their readings should be
+interpreted in that context.
+
+**Limitations**
+
+The dashboard presents measurements from individual monitoring
+stations, not borough-wide pollution estimates.
+
+Missing measurements may affect historical averages, and
+daily averages can hide variation between individual hours.
+""")
 
 st.caption(
-    "Coverage categories use project-defined thresholds. "
-    "Freshness indicates whether a station has a valid reading "
-    "within the final two days of the selected period; it is "
-    "not a live reporting-status check."
-)
-
-st.info(
-    "These readings represent individual monitoring stations, not "
-    "entire boroughs. Roadside and background stations measure different "
-    "environments. Missing data can affect historical averages."
+    "Data source: London Air Quality Network, "
+    "Imperial College London Environmental Research Group."
 )
