@@ -1,4 +1,5 @@
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,6 +81,15 @@ def create_tables(con):
         )
     """)
 
+    # Track the raw JSON files already processed.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS processed_snapshots (
+            filepath VARCHAR PRIMARY KEY,
+            file_hash VARCHAR,
+            processed_at TIMESTAMP
+        )
+    """)
+
 
 def load_sites(con):
     data = load_json(RAW_DIR / "monitoring_sites.json")
@@ -142,13 +152,18 @@ def load_site_pollutants(con):
 def measurement_files():
     files = list((RAW_DIR / "measurements").glob("*.json"))
 
-    # Original files have no download timestamp in their names
+    # Process older snapshots before newer snapshots.
     def snapshot_order(filepath):
         parts = filepath.stem.split("_")
         snapshot_time = parts[4] if len(parts) > 4 else ""
         return (snapshot_time, filepath.name)
 
     return sorted(files, key=snapshot_order)
+
+
+def file_hash(filepath):
+    # A hash identifies changes to a file's contents.
+    return hashlib.sha256(filepath.read_bytes()).hexdigest()
 
 
 def load_measurements(con):
@@ -159,7 +174,23 @@ def load_measurements(con):
         "rejected": 0
     }
 
+    processed_files = 0
+    skipped_files = 0
+
     for filepath in measurement_files():
+        relative_path = filepath.as_posix()
+        current_hash = file_hash(filepath)
+
+        previous = con.execute("""
+            SELECT file_hash
+            FROM processed_snapshots
+            WHERE filepath = ?
+        """, [relative_path]).fetchone()
+
+        if previous is not None and previous[0] == current_hash:
+            skipped_files += 1
+            continue
+
         data = load_json(filepath)
         raw = data["RawAQData"]
 
@@ -214,6 +245,24 @@ def load_measurements(con):
                 ])
                 counts["updated"] += 1
 
+        con.execute("""
+            INSERT INTO processed_snapshots
+            VALUES (?, ?, ?)
+            ON CONFLICT (filepath) DO UPDATE SET
+                file_hash = EXCLUDED.file_hash,
+                processed_at = EXCLUDED.processed_at
+        """, [
+            relative_path,
+            current_hash,
+            datetime.now(timezone.utc).replace(tzinfo=None)
+        ])
+
+        processed_files += 1
+
+    print("\nSNAPSHOT SUMMARY")
+    print(f"Processed files: {processed_files}")
+    print(f"Skipped unchanged files: {skipped_files}")
+
     return counts
 
 
@@ -257,7 +306,8 @@ def main():
             "monitoring_sites",
             "site_pollutants",
             "measurements",
-            "ingestion_runs"
+            "ingestion_runs",
+            "processed_snapshots"
         ]:
             count = con.execute(
                 f"SELECT COUNT(*) FROM {table}"
@@ -275,4 +325,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
