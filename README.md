@@ -469,21 +469,13 @@ These limitations help define the current scope of the project and where further
 
 ## 06. Where AI helped
 
-I used AI as a development and learning tool throughout the project.
+### Where AI helped
 
-This included support with:
+I used AI as a development tool to help understand the LAQN API structure, troubleshoot Python and DuckDB errors, and explore approaches to data cleaning and modelling. I tested suggestions against the actual data and adapted them as the project developed. For example:
 
-- Planning the initial project structure and choosing a manageable scope.
-- Understanding the LAQN API and its JSON responses.
-- Learning and troubleshooting Python, Git and command-line workflows.
-- Developing and refining the extraction, transformation, analysis and dashboard code.
-- Discussing database design, duplicate prevention and historical refresh handling.
-- Debugging errors and developing approaches to testing.
-- Improving the documentation and preparing explanations of technical decisions.
-
-I developed the project iteratively, running the code locally, inspecting the results and using Git to record changes.
-
-AI-assisted code and suggestions still need to be tested and understood. Being able to explain the implementation, identify its limitations and verify the results is an important part of the project.
+- I added data completeness and freshness checks after finding that some monitoring stations had very few valid readings, making their averages potentially misleading.
+- I improved the database logic to prevent duplicate measurements when rerunning the pipeline and to handle updated historical readings.
+- I added timestamped raw JSON snapshots to preserve earlier API responses when refreshing historical data, rather than overwriting them.
 
 ---
 
