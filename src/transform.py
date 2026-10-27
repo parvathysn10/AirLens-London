@@ -35,6 +35,36 @@ def parse_number(value):
     return float(value)
 
 
+def snapshot_priority(filepath):
+    """
+    Return a sortable priority for a raw measurement snapshot.
+
+    Original files have no download timestamp and rank first.
+    Refreshed files have a UTC download timestamp in their filename.
+
+    Example:
+    BL0_NO2_2026-10-24_2026-10-27_20261026T225704072037Z.json
+    """
+    parts = filepath.stem.split("_")
+
+    snapshot_time = (
+        parts[4]
+        if len(parts) > 4
+        else ""
+    )
+
+    return (snapshot_time, filepath.name)
+
+
+def measurement_files():
+    files = list((RAW_DIR / "measurements").glob("*.json"))
+    return sorted(files, key=snapshot_priority)
+
+
+def file_hash(filepath):
+    return hashlib.sha256(filepath.read_bytes()).hexdigest()
+
+
 def create_tables(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS monitoring_sites (
@@ -81,13 +111,18 @@ def create_tables(con):
         )
     """)
 
-    # Track the raw JSON files already processed.
     con.execute("""
         CREATE TABLE IF NOT EXISTS processed_snapshots (
             filepath VARCHAR PRIMARY KEY,
             file_hash VARCHAR,
             processed_at TIMESTAMP
         )
+    """)
+
+    # Compatible with an existing database.
+    con.execute("""
+        ALTER TABLE measurements
+        ADD COLUMN IF NOT EXISTS source_snapshot VARCHAR
     """)
 
 
@@ -149,21 +184,112 @@ def load_site_pollutants(con):
     print(f"Loaded {count} site-pollutant records")
 
 
-def measurement_files():
-    files = list((RAW_DIR / "measurements").glob("*.json"))
+def read_snapshot(filepath):
+    """
+    Parse one raw JSON snapshot into measurement records.
+    Invalid readings are counted and skipped.
+    """
+    data = load_json(filepath)
+    raw = data["RawAQData"]
 
-    # Process older snapshots before newer snapshots.
-    def snapshot_order(filepath):
-        parts = filepath.stem.split("_")
-        snapshot_time = parts[4] if len(parts) > 4 else ""
-        return (snapshot_time, filepath.name)
+    site_code = raw["@SiteCode"]
+    pollutant_code = raw["@SpeciesCode"]
 
-    return sorted(files, key=snapshot_order)
+    records = []
+    rejected = 0
+
+    for reading in as_list(raw.get("Data")):
+        try:
+            timestamp = reading["@MeasurementDateGMT"]
+
+            measured_at = datetime.strptime(
+                timestamp, "%Y-%m-%d %H:%M:%S"
+            )
+
+            value = parse_number(reading.get("@Value"))
+
+        except (KeyError, ValueError, TypeError):
+            rejected += 1
+            continue
+
+        records.append((
+            site_code,
+            pollutant_code,
+            measured_at,
+            value
+        ))
+
+    return records, rejected
 
 
-def file_hash(filepath):
-    # A hash identifies changes to a file's contents.
-    return hashlib.sha256(filepath.read_bytes()).hexdigest()
+def migrate_existing_sources(con, files):
+    """
+    Initialize source_snapshot for measurements already in DuckDB.
+
+    Existing rows were loaded before source tracking existed.
+    Reconstruct their latest matching source from saved snapshots.
+
+    Only assign a source when the saved snapshot value matches
+    the value currently stored in DuckDB.
+
+    This does not change any measurement values.
+    """
+    missing = con.execute("""
+        SELECT COUNT(*)
+        FROM measurements
+        WHERE source_snapshot IS NULL
+    """).fetchone()[0]
+
+    if missing == 0:
+        return
+
+    print(
+        f"\nInitializing snapshot sources for "
+        f"{missing} existing measurements..."
+    )
+
+    assigned = 0
+
+    # Newest snapshots first.
+    for filepath in reversed(files):
+        relative_path = filepath.as_posix()
+        records, _ = read_snapshot(filepath)
+
+        for site_code, pollutant_code, measured_at, value in records:
+            result = con.execute("""
+                UPDATE measurements
+                SET source_snapshot = ?
+                WHERE site_code = ?
+                  AND pollutant_code = ?
+                  AND measured_at = ?
+                  AND source_snapshot IS NULL
+                  AND value IS NOT DISTINCT FROM ?
+            """, [
+                relative_path,
+                site_code,
+                pollutant_code,
+                measured_at,
+                value
+            ])
+
+            # DuckDB returns a count for UPDATE statements.
+            assigned += result.fetchone()[0]
+
+    remaining = con.execute("""
+        SELECT COUNT(*)
+        FROM measurements
+        WHERE source_snapshot IS NULL
+    """).fetchone()[0]
+
+    print(f"Source snapshots assigned: {assigned}")
+    print(f"Measurements without a matching source: {remaining}")
+
+    if remaining:
+        raise RuntimeError(
+            "Some existing measurements could not be matched to "
+            "their saved raw snapshots. No changes have been committed. "
+            "Check the raw files before continuing."
+        )
 
 
 def load_measurements(con):
@@ -176,8 +302,14 @@ def load_measurements(con):
 
     processed_files = 0
     skipped_files = 0
+    older_readings_ignored = 0
 
-    for filepath in measurement_files():
+    files = measurement_files()
+
+    # One-time migration for measurements loaded before source tracking.
+    migrate_existing_sources(con, files)
+
+    for filepath in files:
         relative_path = filepath.as_posix()
         current_hash = file_hash(filepath)
 
@@ -191,58 +323,95 @@ def load_measurements(con):
             skipped_files += 1
             continue
 
-        data = load_json(filepath)
-        raw = data["RawAQData"]
+        records, rejected = read_snapshot(filepath)
+        counts["rejected"] += rejected
 
-        site_code = raw["@SiteCode"]
-        pollutant_code = raw["@SpeciesCode"]
-
-        for reading in as_list(raw.get("Data")):
-            try:
-                timestamp = reading["@MeasurementDateGMT"]
-                measured_at = datetime.strptime(
-                    timestamp, "%Y-%m-%d %H:%M:%S"
-                )
-                value = parse_number(reading.get("@Value"))
-
-            except (KeyError, ValueError, TypeError):
-                counts["rejected"] += 1
-                continue
-
+        for site_code, pollutant_code, measured_at, value in records:
             existing = con.execute("""
-                SELECT value
+                SELECT value, source_snapshot
                 FROM measurements
                 WHERE site_code = ?
                   AND pollutant_code = ?
                   AND measured_at = ?
             """, [
-                site_code, pollutant_code, measured_at
+                site_code,
+                pollutant_code,
+                measured_at
             ]).fetchone()
 
             if existing is None:
                 con.execute("""
-                    INSERT INTO measurements
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO measurements (
+                        site_code,
+                        pollutant_code,
+                        measured_at,
+                        value,
+                        source_snapshot
+                    )
+                    VALUES (?, ?, ?, ?, ?)
                 """, [
-                    site_code, pollutant_code, measured_at, value
+                    site_code,
+                    pollutant_code,
+                    measured_at,
+                    value,
+                    relative_path
                 ])
-                counts["inserted"] += 1
 
-            elif existing[0] == value or (
-                existing[0] is None and value is None
-            ):
+                counts["inserted"] += 1
+                continue
+
+            old_value, old_source = existing
+
+            # A newer source must always take priority.
+            if old_source is not None:
+                old_priority = snapshot_priority(Path(old_source))
+                new_priority = snapshot_priority(filepath)
+
+                if new_priority < old_priority:
+                    older_readings_ignored += 1
+                    continue
+
+            same_value = (
+                old_value == value
+                or (old_value is None and value is None)
+            )
+
+            if same_value:
                 counts["unchanged"] += 1
+
+                # Even if the value is identical, remember the
+                # newer source so an older file cannot later
+                # overwrite this measurement.
+                if old_source != relative_path:
+                    con.execute("""
+                        UPDATE measurements
+                        SET source_snapshot = ?
+                        WHERE site_code = ?
+                          AND pollutant_code = ?
+                          AND measured_at = ?
+                    """, [
+                        relative_path,
+                        site_code,
+                        pollutant_code,
+                        measured_at
+                    ])
 
             else:
                 con.execute("""
                     UPDATE measurements
-                    SET value = ?
+                    SET value = ?,
+                        source_snapshot = ?
                     WHERE site_code = ?
                       AND pollutant_code = ?
                       AND measured_at = ?
                 """, [
-                    value, site_code, pollutant_code, measured_at
+                    value,
+                    relative_path,
+                    site_code,
+                    pollutant_code,
+                    measured_at
                 ])
+
                 counts["updated"] += 1
 
         con.execute("""
@@ -262,6 +431,7 @@ def load_measurements(con):
     print("\nSNAPSHOT SUMMARY")
     print(f"Processed files: {processed_files}")
     print(f"Skipped unchanged files: {skipped_files}")
+    print(f"Older readings ignored: {older_readings_ignored}")
 
     return counts
 
