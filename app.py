@@ -110,6 +110,55 @@ if not selected_codes:
     st.info("Select at least one monitoring station.")
     st.stop()
 
+# Latest available readings use the full database, not the historical date filter.
+# A recent reading is defined here as being no more than 48 hours old.
+st.subheader("Latest available readings")
+st.caption(
+    "Latest valid measurement stored in AirLens for each selected station. "
+    "These are not necessarily live readings. Times are GMT/UTC. "
+    "Use the pipeline's --latest option to retrieve new API data."
+)
+
+latest_all = pollutant_data[
+    pollutant_data["site_code"].isin(selected_codes)
+].copy()
+
+now_utc = pd.Timestamp.now(tz="UTC").tz_localize(None)
+
+latest_valid = (
+    latest_all.dropna(subset=["value"])
+    .sort_values("measured_at")
+    .drop_duplicates(subset=["site_code"], keep="last")
+    .set_index("site_code")
+)
+
+station_cards = st.columns(min(4, len(selected_codes)))
+
+for index, code in enumerate(selected_codes):
+    station_name = station_labels[code]
+    with station_cards[index % len(station_cards)]:
+        st.markdown(f"**{station_name}**")
+        if code not in latest_valid.index:
+            st.metric("Latest valid reading", "N/A")
+            st.caption("No valid data available in the stored history")
+        else:
+            record = latest_valid.loc[code]
+            reading_time = pd.Timestamp(record["measured_at"])
+            age = now_utc - reading_time
+            recent = timedelta(0) <= age <= timedelta(hours=48)
+            status = "Recent" if recent else "Outdated"
+            st.metric("Latest valid reading", f"{record['value']:.2f}")
+            st.caption(
+                f"{status} | {reading_time:%d %b %Y, %H:%M} UTC"
+            )
+
+st.info(
+    "Missing data does not mean zero pollution. A station may have "
+    "older valid readings but none in the selected historical period. "
+    "'Recent' means within 48 hours of the current time, not live."
+)
+st.divider()
+
 filtered = pollutant_data[
     (pollutant_data["measured_at"].dt.date >= start_date)
     & (pollutant_data["measured_at"].dt.date <= end_date)
