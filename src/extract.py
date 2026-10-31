@@ -17,6 +17,8 @@ STATIONS = {
     "BG1": "Barking and Dagenham - Rush Green",
     "BQ7": "Bexley - Belvedere West",
     "BT8": "Brent - ARK Franklin Primary Academy",
+    "RI2": "Richmond Upon Thames - Barnes Wetlands",
+    "LB6": "Lambeth - Streatham Green",
 }
 
 POLLUTANTS = ["NO2"]
