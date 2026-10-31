@@ -1,6 +1,7 @@
 
 import hashlib
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,7 +33,13 @@ def parse_date(value):
 def parse_number(value):
     if value in ("", None):
         return None
-    return float(value)
+
+    number = float(value)
+
+    if not math.isfinite(number):
+        raise ValueError("Value must be a finite number")
+
+    return number
 
 
 def snapshot_priority(filepath):
