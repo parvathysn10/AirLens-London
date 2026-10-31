@@ -1,6 +1,12 @@
 
+from unittest.mock import patch
+
 import pytest
 
+from src.extract import (
+    fetch_json,
+    validate_measurement_response,
+)
 from src.quality import classify_coverage, classify_freshness
 from src.transform import parse_number
 
@@ -45,7 +51,57 @@ def test_parse_number_validation():
         parse_number("not_a_number")
 
 
+def test_measurement_response_validation():
+    valid_empty = {
+        "RawAQData": {
+            "@SiteCode": "BG1",
+            "@SpeciesCode": "NO2",
+            "Data": None,
+        }
+    }
+
+    assert validate_measurement_response(
+        valid_empty, "BG1", "NO2"
+    ) == []
+
+    malformed = {"unexpected": "response"}
+
+    with pytest.raises(ValueError):
+        validate_measurement_response(
+            malformed, "BG1", "NO2"
+        )
+
+    with pytest.raises(ValueError):
+        validate_measurement_response(
+            valid_empty, "BT8", "NO2"
+        )
+
+
+def test_fetch_json_retry_configuration():
+    with patch("src.extract.requests.Session") as mock_session:
+        session = mock_session.return_value.__enter__.return_value
+
+        response = session.get.return_value
+        response.json.return_value = {"status": "ok"}
+
+        result = fetch_json("test")
+
+        assert result == {"status": "ok"}
+
+        adapter = session.mount.call_args.args[1]
+        retries = adapter.max_retries
+
+        assert retries.total == 3
+        assert retries.backoff_factor == 1
+        assert set(retries.status_forcelist) == {
+            429, 500, 502, 503, 504
+        }
+        assert "GET" in retries.allowed_methods
+
+
 if __name__ == "__main__":
     test_quality_classification()
     test_parse_number_validation()
-    print("All quality classification and number validation tests passed")
+    test_measurement_response_validation()
+    test_fetch_json_retry_configuration()
+    print("All quality and extraction validation tests passed")
