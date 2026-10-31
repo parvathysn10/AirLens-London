@@ -17,11 +17,20 @@ def run_script(script, arguments=None):
 
     print(f"\nRunning {script}", flush=True)
 
-    subprocess.run(
-        command,
-        cwd=PROJECT_DIR,
-        check=True,
-    )
+    try:
+        subprocess.run(
+            command,
+            cwd=PROJECT_DIR,
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        print(
+            f"\nPipeline failed while running {script} "
+            f"(exit code {error.returncode})",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(error.returncode)
 
 
 def main():
@@ -70,12 +79,17 @@ def main():
 
     else:
         # Preserve the existing historical default period.
-        start_date = date.fromisoformat(
-            args.start or "2026-10-01"
-        )
-        end_date = date.fromisoformat(
-            args.end or "2026-10-25"
-        )
+        try:
+            start_date = date.fromisoformat(
+                args.start or "2026-10-01"
+            )
+            end_date = date.fromisoformat(
+                args.end or "2026-10-25"
+            )
+        except ValueError:
+            parser.error(
+                "Dates must be valid and use YYYY-MM-DD format"
+            )
 
     if end_date <= start_date:
         parser.error("End date must be after start date")
