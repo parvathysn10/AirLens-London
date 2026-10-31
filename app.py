@@ -49,9 +49,8 @@ st.set_page_config(
 st.title("AirLens London")
 
 st.write(
-    "Explore historical air pollution measurements across London "
-    "monitoring stations, with data completeness and freshness "
-    "shown alongside the results."
+    "Explore historical nitrogen dioxide (NO₂) measurements at a London "
+    "monitoring station, compare another area, and check data reliability."
 )
 
 
@@ -109,70 +108,28 @@ if readings.empty:
     st.stop()
 
 
-# =========================================================
-# SIDEBAR FILTERS
-# =========================================================
-
-st.sidebar.header("Filters")
-
-pollutants = sorted(
-    readings["pollutant_code"].dropna().unique().tolist()
-)
-
-selected_pollutant = st.sidebar.selectbox(
-    "Pollutant",
-    pollutants,
-)
-
-pollutant_data = readings[
-    readings["pollutant_code"] == selected_pollutant
-].copy()
-
-min_date = pollutant_data["measured_at"].min().date()
-max_date = pollutant_data["measured_at"].max().date()
-
-selected_dates = st.sidebar.date_input(
-    "Date range",
-    value=(min_date, max_date),
-    min_value=min_date,
-    max_value=max_date,
-    help=(
-        "Controls the detailed data analysis below. "
-        "The Station Explorer uses its own historical period."
-    ),
-)
-
-if (
-    not isinstance(selected_dates, (tuple, list))
-    or len(selected_dates) != 2
-):
-    st.info("Select both a start date and an end date.")
+# Only NO2 is currently collected in this project. Keep the focus on the user story.
+selected_pollutant = "NO2"
+pollutant_data = readings[readings["pollutant_code"] == selected_pollutant].copy()
+if pollutant_data.empty:
+    st.warning("No NO₂ data found in the database.")
     st.stop()
-
-start_date, end_date = selected_dates
 
 station_options = (
     pollutant_data[["site_code", "site_name"]]
     .drop_duplicates()
     .sort_values("site_name")
 )
-
 station_labels = {
     row.site_code: f"{row.site_name} ({row.site_code})"
     for row in station_options.itertuples(index=False)
 }
-
-selected_codes = st.sidebar.multiselect(
-    "Monitoring stations",
-    options=list(station_labels),
-    default=list(station_labels),
-    format_func=lambda code: station_labels[code],
-)
-
-if not selected_codes:
-    st.info("Select at least one monitoring station.")
-    st.stop()
-
+selected_codes = list(station_labels)
+# Compact names for chart axes and legends; full names remain in selectors and tables.
+chart_labels = {
+    code: f"{station_labels[code].split(' - ')[0]} ({code})"
+    for code in selected_codes
+}
 
 # =========================================================
 # PREPARE LATEST READINGS
@@ -230,6 +187,19 @@ selected_station = st.selectbox(
     format_func=lambda code: station_labels[code],
 )
 
+# This selection controls BOTH the initial trend chart and the comparison section.
+default_compare = [code for code in ("BT8", "BQ7") if code in selected_codes]
+comparison_codes = st.multiselect(
+    "Which monitoring stations would you like to compare? (Select up to all four)",
+    options=selected_codes,
+    default=default_compare or selected_codes[:2],
+    format_func=lambda code: station_labels[code],
+    help="Select any or all four. Stations without valid readings stay in the quality checks.",
+)
+if not comparison_codes:
+    st.info("Select at least one station to display the historical charts.")
+    st.stop()
+
 selected_period = st.radio(
     "Historical period",
     options=["24 hours", "7 days", "30 days"],
@@ -271,6 +241,8 @@ else:
         - pd.Timedelta(days=number_of_days - 1)
     )
 
+    period_start = period_start_day
+
     period_data = pollutant_data[
         (
             pollutant_data["measured_at"]
@@ -278,20 +250,24 @@ else:
         )
         & (
             pollutant_data["measured_at"]
-            < period_end_day + pd.Timedelta(days=1)
+            <= latest_stored_time
         )
     ].copy()
 
-    expected_period_hours = number_of_days * 24
+    expected_period_hours = int(
+        (latest_stored_time - period_start_day) / pd.Timedelta(hours=1)
+    ) + 1
 
 station_history = period_data[
     period_data["site_code"] == selected_station
 ].copy()
 
-st.caption(
-    f"Historical view based on stored measurements through "
+st.info(
+    f"**Historical dataset — not live.** Latest stored timestamp: "
+    f"{latest_stored_time:%d %b %Y at %H:%M} UTC. "
+    f"Selected period: {period_start:%d %b %Y, %H:%M} to "
     f"{latest_stored_time:%d %b %Y, %H:%M} UTC. "
-    "These measurements are not necessarily live."
+    "The latest valid reading for an individual station may be older."
 )
 
 
@@ -422,935 +398,561 @@ if valid_period_hours == 0:
 # HISTORICAL POLLUTION CHART
 # =========================================================
 
-st.subheader("Historical pollution levels")
+with st.expander(
+    f"Individual station history — {station_labels[selected_station]}",
+    expanded=len(comparison_codes) == 1,
+):
+    st.subheader("Individual station history")
 
-st.caption(
-    "Pollution concentrations are measured in "
-    "micrograms per cubic meter (µg/m³). "
-    "Missing measurements are not treated as zero."
-)
-
-if selected_period == "24 hours":
-
-    # Hourly values must not be directly compared
-    # with a guideline defined for 24-hour averages.
-
-    hourly_data = (
-        station_history
-        .dropna(subset=["value"])
-        .sort_values("measured_at")
+    st.caption(
+        "Pollution concentrations are measured in "
+        "micrograms per cubic meter (µg/m³). "
+        "Missing measurements are not treated as zero."
     )
 
-    if hourly_data.empty:
+    if selected_period == "24 hours":
 
-        st.info(
-            "No valid hourly measurements are available "
-            "for this station in the selected period."
+        # Hourly values must not be directly compared
+        # with a guideline defined for 24-hour averages.
+
+        hourly_data = (
+            station_history
+            .dropna(subset=["value"])
+            .sort_values("measured_at")
+        )
+
+        if hourly_data.empty:
+
+            st.info(
+                "No valid hourly measurements are available "
+                "for this station in the selected period."
+            )
+
+        else:
+
+            hourly_chart = (
+                alt.Chart(hourly_data)
+                .mark_line(
+                    point=True,
+                    color="#277DA1",
+                )
+                .encode(
+                    x=alt.X(
+                        "measured_at:T",
+                        title="Time (UTC)",
+                    ),
+                    y=alt.Y(
+                        "value:Q",
+                        title="Hourly concentration (µg/m³)",
+                        scale=alt.Scale(zero=True),
+                    ),
+                    tooltip=[
+                        alt.Tooltip(
+                            "measured_at:T",
+                            title="Time",
+                        ),
+                        alt.Tooltip(
+                            "value:Q",
+                            title="Concentration",
+                            format=".2f",
+                        ),
+                    ],
+                )
+            )
+
+            st.altair_chart(
+                hourly_chart,
+                width="stretch",
+            )
+
+        st.caption(
+            f"**Hourly measurements from {period_start:%d %b %Y, %H:%M} to "
+            f"{latest_stored_time:%d %b %Y, %H:%M} UTC** — not necessarily today's data. "
+            "The WHO 24-hour guideline is not an hourly limit."
         )
 
     else:
 
-        hourly_chart = (
-            alt.Chart(hourly_data)
-            .mark_line(
-                point=True,
-                color="#277DA1",
+        # Calculate daily means from hourly measurements.
+        # Require at least 18 valid hours for each daily mean.
+
+        station_history["date"] = (
+            station_history["measured_at"].dt.floor("D")
+        )
+
+        daily_data = (
+            station_history.groupby(
+                "date",
+                as_index=False,
             )
-            .encode(
-                x=alt.X(
-                    "measured_at:T",
-                    title="Time (UTC)",
-                ),
-                y=alt.Y(
-                    "value:Q",
-                    title="Hourly concentration (µg/m³)",
-                    scale=alt.Scale(zero=True),
-                ),
-                tooltip=[
-                    alt.Tooltip(
-                        "measured_at:T",
-                        title="Time",
-                    ),
-                    alt.Tooltip(
-                        "value:Q",
-                        title="Concentration",
-                        format=".2f",
-                    ),
-                ],
+            .agg(
+                daily_average=("value", "mean"),
+                valid_hours=("value", "count"),
             )
         )
 
-        st.altair_chart(
-            hourly_chart,
-            width="stretch",
+        daily_data.loc[
+            daily_data["valid_hours"] < 18,
+            "daily_average",
+        ] = float("nan")
+
+        # A partial final day is not a completed 24-hour average.
+        daily_data.loc[
+            daily_data["date"] >= latest_stored_time.normalize(),
+            "daily_average",
+        ] = float("nan")
+
+        valid_daily = daily_data.dropna(
+            subset=["daily_average"]
+        ).copy()
+
+        if valid_daily.empty:
+
+            st.info(
+                "No daily averages have at least 18 valid "
+                "hourly measurements in this period."
+            )
+
+        else:
+
+            guideline = WHO_DAILY_GUIDELINES["NO2"]
+            days = pd.date_range(
+                period_start_day,
+                latest_stored_time.normalize() - pd.Timedelta(days=1),
+                freq="D",
+            )
+            chart_days = pd.DataFrame({"date": days}).merge(
+                daily_data[["date", "daily_average", "valid_hours"]],
+                on="date", how="left",
+            )
+            measured = chart_days.rename(columns={"daily_average": "concentration"})
+            measured["series"] = "Station daily average"
+            reference = pd.DataFrame({
+                "date": days,
+                "concentration": guideline,
+                "series": "WHO 24-hour reference",
+            })
+            chart_data = pd.concat([measured, reference], ignore_index=True)
+            pollution_chart = (
+                alt.Chart(chart_data)
+                .mark_line(point=False, strokeWidth=2)
+                .encode(
+                    x=alt.X("date:T", title="Date (UTC)", axis=alt.Axis(format="%d %b", labelAngle=0, tickCount="day")),
+                    y=alt.Y(
+                        "concentration:Q", title="Daily NO₂ (µg/m³)",
+                        scale=alt.Scale(zero=True),
+                    ),
+                    color=alt.Color(
+                        "series:N", title="Legend",
+                        scale=alt.Scale(
+                            domain=["Station daily average", "WHO 24-hour reference"],
+                            range=["#277DA1", "#D97706"],
+                        ),
+                    ),
+                    strokeDash=alt.StrokeDash(
+                        "series:N", legend=None,
+                        scale=alt.Scale(
+                            domain=["Station daily average", "WHO 24-hour reference"],
+                            range=[[1, 0], [6, 5]],
+                        ),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("date:T", title="Date"),
+                        alt.Tooltip("series:N", title="Series"),
+                        alt.Tooltip("concentration:Q", title="µg/m³", format=".2f"),
+                    ],
+                )
+            )
+            st.altair_chart(pollution_chart, width="stretch")
+            missing_days = chart_days[chart_days["daily_average"].isna()]["date"]
+            if not missing_days.empty:
+                st.caption(
+                    "**Gaps in the blue line:** insufficient valid hourly readings on "
+                    + ", ".join(day.strftime("%d %b") for day in missing_days)
+                    + ". These dates are deliberately not connected or treated as zero."
+                )
+            st.caption(
+                "WHO 2021 NO₂ 24-hour reference: 25 µg/m³. "
+                "The guideline is assessed using the 99th percentile of daily "
+                "means over a year, not as a strict single-day pass/fail test."
+            )
+
+        st.caption(
+            "AirLens requires at least 18 valid hourly "
+            "readings to display a daily average. "
+            "Days with insufficient data are omitted "
+            "rather than treated as zero."
         )
 
-    st.caption(
-        "This chart shows hourly measurements. "
-        "The WHO 24-hour guideline is not an hourly limit."
-    )
 
-else:
+# =========================================================
+# 2. COMPARE WITH ANOTHER STATION
+# =========================================================
 
-    # Calculate daily means from hourly measurements.
-    # Require at least 18 valid hours for each daily mean.
-
-    station_history["date"] = (
-        station_history["measured_at"].dt.floor("D")
-    )
-
-    daily_data = (
-        station_history.groupby(
-            "date",
-            as_index=False,
-        )
-        .agg(
+# A shared multi-station view is also available immediately in the explorer.
+# It uses the same selection as the comparison section.
+st.subheader("Historical pollution levels — selected stations")
+with st.container():
+    multi = period_data[period_data["site_code"].isin(comparison_codes)].copy()
+    multi["Station"] = multi["site_code"].map(chart_labels)
+    if selected_period == "24 hours":
+        plot = multi.dropna(subset=["value"])
+        if not plot.empty:
+            multi_chart = alt.Chart(plot).mark_line(point=True).encode(
+                x=alt.X("measured_at:T", title="Date and time (UTC)"),
+                y=alt.Y("value:Q", title="Hourly NO₂ (µg/m³)"),
+                color=alt.Color("Station:N", title="Stations with data"),
+                tooltip=["Station:N", "measured_at:T", alt.Tooltip("value:Q", format=".2f")],
+            )
+            st.altair_chart(multi_chart, width="stretch")
+    else:
+        multi["date"] = multi["measured_at"].dt.floor("D")
+        grouped = multi.groupby(["site_code", "Station", "date"], as_index=False).agg(
             daily_average=("value", "mean"),
             valid_hours=("value", "count"),
         )
-    )
-
-    daily_data.loc[
-        daily_data["valid_hours"] < 18,
-        "daily_average",
-    ] = float("nan")
-
-    valid_daily = daily_data.dropna(
-        subset=["daily_average"]
-    ).copy()
-
-    if valid_daily.empty:
-
-        st.info(
-            "No daily averages have at least 18 valid "
-            "hourly measurements in this period."
-        )
-
-    else:
-
-        pollution_chart = (
-            alt.Chart(valid_daily)
-            .mark_line(
-                point=True,
-                color="#277DA1",
+        grouped = grouped[
+            (grouped["valid_hours"] >= 18)
+            & (grouped["date"] < latest_stored_time.normalize())
+        ]
+        if not grouped.empty:
+            multi_chart = alt.Chart(grouped).mark_line(point=True).encode(
+                x=alt.X("date:T", title="Date (UTC)", axis=alt.Axis(format="%d %b", labelAngle=0)),
+                y=alt.Y("daily_average:Q", title="Daily NO₂ (µg/m³)"),
+                color=alt.Color("Station:N", title="Stations with data"),
+                tooltip=["Station:N", "date:T", alt.Tooltip("daily_average:Q", format=".2f")],
             )
-            .encode(
-                x=alt.X(
-                    "date:T",
-                    title="Date (UTC)",
-                ),
-                y=alt.Y(
-                    "daily_average:Q",
-                    title="Daily average (µg/m³)",
-                    scale=alt.Scale(zero=True),
-                ),
-                tooltip=[
-                    alt.Tooltip(
-                        "date:T",
-                        title="Date",
-                    ),
-                    alt.Tooltip(
-                        "daily_average:Q",
-                        title="Daily average",
-                        format=".2f",
-                    ),
-                    alt.Tooltip(
-                        "valid_hours:Q",
-                        title="Valid hours",
-                    ),
-                ],
-            )
-        )
-
-        guideline = WHO_DAILY_GUIDELINES.get(
-            selected_pollutant
-        )
-
-        if guideline is not None:
-
-            guideline_data = pd.DataFrame({
-                "guideline": [guideline]
-            })
-
-            guideline_line = (
-                alt.Chart(guideline_data)
-                .mark_rule(
-                    color="#D97706",
-                    strokeDash=[6, 5],
-                    size=2,
-                )
-                .encode(
-                    y="guideline:Q"
-                )
-            )
-
-            st.altair_chart(
-                pollution_chart + guideline_line,
-                width="stretch",
-            )
-
-            st.caption(
-                f"Blue: station daily average. "
-                f"Orange dashed line: WHO 2021 "
-                f"24-hour guideline "
-                f"({guideline} µg/m³)."
-            )
-
-            st.info(
-                "The WHO 24-hour guideline is assessed "
-                "using the 99th percentile of daily "
-                "mean concentrations over a year. "
-                "A single day above the line does not "
-                "establish annual non-compliance."
-            )
-
-        else:
-
-            st.altair_chart(
-                pollution_chart,
-                width="stretch",
-            )
-
-    st.caption(
-        "AirLens requires at least 18 valid hourly "
-        "readings to display a daily average. "
-        "Days with insufficient data are omitted "
-        "rather than treated as zero."
-    )
-
-
-# =========================================================
-# 2. LATEST READINGS ACROSS ALL STATIONS
-# =========================================================
-
-st.divider()
-
-st.header("2. Latest available readings")
-
-st.caption(
-    "Latest valid measurement stored in AirLens for "
-    "each selected station. These are not necessarily "
-    "live readings. Times are GMT/UTC. "
-    "Use the pipeline's --latest option to retrieve "
-    "new API data."
-)
-
-station_cards = st.columns(
-    min(4, len(selected_codes))
-)
-
-for index, code in enumerate(selected_codes):
-
-    station_name = station_labels[code]
-
-    with station_cards[
-        index % len(station_cards)
-    ]:
-
-        st.markdown(
-            f"**{station_name}**"
-        )
-
-        if code not in latest_valid.index:
-
-            st.metric(
-                "Latest valid reading",
-                "N/A",
-            )
-
-            st.caption(
-                "No valid data available "
-                "in the stored history"
-            )
-
-        else:
-
-            record = latest_valid.loc[code]
-
-            reading_time = pd.Timestamp(
-                record["measured_at"]
-            )
-
-            age = now_utc - reading_time
-
-            recent = (
-                timedelta(0)
-                <= age
-                <= timedelta(hours=48)
-            )
-
-            status = (
-                "Recent" if recent else "Outdated"
-            )
-
-            st.metric(
-                "Latest valid reading",
-                f"{record['value']:.2f} µg/m³",
-            )
-
-            st.caption(
-                f"{status} | "
-                f"{reading_time:%d %b %Y, %H:%M} UTC"
-            )
-
-st.info(
-    "Missing data does not mean zero pollution. "
-    "A station may have older valid readings but "
-    "none in the selected historical period. "
-    "'Recent' means within 48 hours of the "
-    "current time, not live."
-)
-
-
-# =========================================================
-# 3. DETAILED DATA ANALYSIS
-# =========================================================
-
-st.divider()
-
-st.header("3. Explore the data")
-
-st.write(
-    "This section provides detailed comparisons, "
-    "data-quality checks and historical trends "
-    "using the date range selected in the sidebar."
-)
-
-filtered = pollutant_data[
-    (
-        pollutant_data["measured_at"].dt.date
-        >= start_date
-    )
-    & (
-        pollutant_data["measured_at"].dt.date
-        <= end_date
-    )
-    & (
-        pollutant_data["site_code"].isin(
-            selected_codes
-        )
-    )
-].copy()
-
-if filtered.empty:
-    st.warning(
-        "No measurements available for these filters."
-    )
-    st.stop()
-
-expected_hours = (
-    (end_date - start_date).days + 1
-) * 24
-
-summary = (
-    filtered.groupby(
-        [
-            "site_code",
-            "site_name",
-            "site_type",
-            "local_authority",
-        ],
-        as_index=False,
-    )
-    .agg(
-        average_value=("value", "mean"),
-        valid_hours=("value", "count"),
-        returned_hours=("measured_at", "nunique"),
-    )
-)
-
-latest_readings = (
-    filtered.dropna(subset=["value"])
-    .groupby("site_code")["measured_at"]
-    .max()
-    .rename("latest_valid_reading")
-)
-
-summary = summary.merge(
-    latest_readings,
-    on="site_code",
-    how="left",
-)
-
-summary["expected_hours"] = expected_hours
-
-summary["missing_hours"] = (
-    expected_hours - summary["valid_hours"]
-).clip(lower=0)
-
-summary["completeness_pct"] = (
-    summary["valid_hours"]
-    / expected_hours
-    * 100
-).round(1)
-
-summary["average_value"] = (
-    summary["average_value"].round(2)
-)
-
-summary["data_quality"] = summary.apply(
-    lambda row: classify_coverage(
-        row["valid_hours"],
-        row["expected_hours"],
-    ),
-    axis=1,
-)
-
-period_end = datetime.combine(
-    end_date + timedelta(days=1),
-    time.min,
-)
-
-summary["freshness"] = (
-    summary["latest_valid_reading"].apply(
-        lambda latest: (
-            "No valid readings"
-            if pd.isna(latest)
-            else classify_freshness(
-                latest,
-                period_end,
-            )
-        )
-    )
-)
-
-summary = summary.sort_values(
-    "completeness_pct",
-    ascending=False,
-).reset_index(drop=True)
-
-summary["chart_label"] = summary.apply(
-    lambda row: (
-        f"{row['local_authority']} "
-        f"({row['site_code']})"
-    ),
-    axis=1,
-)
-
-st.caption(
-    f"Reporting period: "
-    f"{start_date:%d %b %Y} to "
-    f"{end_date:%d %b %Y} | "
-    f"Pollutant: {selected_pollutant} | "
-    f"Expected hours per station: {expected_hours}"
-)
-
-
-# =========================================================
-# DATA QUALITY OVERVIEW
-# =========================================================
-
-st.divider()
-
-st.subheader("Data quality overview")
-
-good_count = int(
-    (
-        summary["data_quality"]
-        == "Good coverage"
-    ).sum()
-)
-
-moderate_count = int(
-    (
-        summary["data_quality"]
-        == "Moderate coverage"
-    ).sum()
-)
-
-low_count = int(
-    (
-        summary["data_quality"]
-        == "Low coverage"
-    ).sum()
-)
-
-no_data_count = int(
-    (
-        summary["data_quality"]
-        == "No valid data"
-    ).sum()
-)
-
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric(
-    "Good coverage",
-    good_count,
-)
-
-col2.metric(
-    "Moderate coverage",
-    moderate_count,
-)
-
-col3.metric(
-    "Low coverage",
-    low_count,
-)
-
-col4.metric(
-    "No valid data",
-    no_data_count,
-)
-
-st.caption(
-    "Coverage measures the percentage of "
-    "expected hourly observations that "
-    "contain a valid measurement."
-)
-
-
-# =========================================================
-# KEY FINDINGS
-# =========================================================
-
-st.subheader("Key findings")
-
-valid_stations = summary[
-    summary["average_value"].notna()
-].copy()
-
-reliable_stations = summary[
-    summary["completeness_pct"] >= 75
-].copy()
-
-if not reliable_stations.empty:
-
-    best_coverage = (
-        reliable_stations.sort_values(
-            "completeness_pct",
-            ascending=False,
-        ).iloc[0]
-    )
-
-    st.write(
-        f"**Best data coverage:** "
-        f"{best_coverage['site_name']} "
-        f"has "
-        f"{best_coverage['completeness_pct']:.1f}% "
-        "complete hourly data for "
-        "the selected period."
-    )
-
-if not valid_stations.empty:
-
-    lowest_coverage = (
-        valid_stations.sort_values(
-            "completeness_pct"
-        ).iloc[0]
-    )
-
-    if lowest_coverage["completeness_pct"] < 75:
-
-        st.write(
-            "**Comparison caution:** "
-            f"{lowest_coverage['site_name']} "
-            "has only "
-            f"{lowest_coverage['completeness_pct']:.1f}% "
-            "complete data. Its average may not "
-            "represent the full reporting period."
-        )
-
-missing_stations = summary[
-    summary["valid_hours"] == 0
-]
-
-if not missing_stations.empty:
-
-    st.write(
-        "**Missing measurements:** "
-        f"{len(missing_stations)} selected "
-        "station(s) have no valid readings "
-        "for this period."
-    )
-
-if (
-    reliable_stations.empty
-    and missing_stations.empty
-    and valid_stations.empty
-):
-    st.info(
-        "No valid measurements are available "
-        "for this selection."
-    )
-
-
-# =========================================================
-# STATION COMPARISON TABLE
-# =========================================================
-
-st.divider()
-
-st.subheader("Station comparison")
-
-display_columns = {
-    "site_name": "Monitoring station",
-    "site_type": "Site type",
-    "average_value": (
-        "Average NO₂"
-        if selected_pollutant == "NO2"
-        else f"Average {selected_pollutant}"
-    ),
-    "valid_hours": "Valid hours",
-    "missing_hours": "Missing hours",
-    "expected_hours": "Expected hours",
-    "completeness_pct": "Coverage (%)",
-    "data_quality": "Data quality",
-    "freshness": "Freshness",
-    "latest_valid_reading": "Latest valid reading",
-}
-
-display_table = summary[
-    list(display_columns)
-].rename(
-    columns=display_columns
-)
-
-st.dataframe(
-    display_table,
-    width="stretch",
-    hide_index=True,
-    column_config={
-        "Coverage (%)": (
-            st.column_config.NumberColumn(
-                "Coverage (%)",
-                format="%.1f%%",
-            )
-        ),
-        "Latest valid reading": (
-            st.column_config.DatetimeColumn(
-                "Latest valid reading",
-                format="DD MMM YYYY, HH:mm",
-            )
-        ),
-    },
-)
-
-unreliable = summary[
-    summary["completeness_pct"] < 75
-]
-
-if not unreliable.empty:
-
-    st.warning(
-        f"{len(unreliable)} station(s) "
-        "have less than 75% valid hourly data. "
-        "Their averages may be missing or "
-        "unrepresentative of the selected period."
-    )
-
-outdated = summary[
-    summary["freshness"] == "Outdated"
-]
-
-if not outdated.empty:
-
-    st.info(
-        f"{len(outdated)} station(s) have "
-        "no valid readings within the final "
-        "two days of the selected period."
-    )
-
-
-# =========================================================
-# POLLUTION COMPARISON
-# =========================================================
-
-st.divider()
-
-st.subheader("Pollution comparison")
-
-reliable_only = st.checkbox(
-    "Only include stations with at least "
-    "75% data coverage in pollution charts",
-    value=True,
-)
-
-chart_summary = summary.copy()
-
-if reliable_only:
-
-    chart_summary = chart_summary[
-        chart_summary["completeness_pct"] >= 75
+            st.altair_chart(multi_chart, width="stretch")
+    absent = [
+        chart_labels[code] for code in comparison_codes
+        if not multi.loc[(multi["site_code"] == code) & multi["value"].notna()].shape[0]
     ]
+    if absent:
+        st.caption("No valid readings for the selected period: " + ", ".join(absent)
+                   + ". They remain available in the quality table; missing data is not zero.")
+    if selected_period == "24 hours":
+        st.caption(
+            "Hourly measurements for the selected 24-hour period (UTC). "
+            "Missing readings are not treated as zero; only stations with "
+            "available measurements are plotted."
+        )
+    else:
+        st.caption(
+            "Daily averages require at least 18 valid hours on a completed day. "
+            "Gaps indicate insufficient data; the final incomplete day is excluded."
+        )
 
-
-# =========================================================
-# AVERAGE POLLUTANT MEASUREMENTS
-# =========================================================
-
-st.markdown(
-    "#### Average pollutant measurements"
+st.divider()
+st.header("2. Compare monitoring stations")
+st.write(
+    "Select any of the four monitoring stations for a side-by-side comparison. "
+    "The station explored above is independent of this selection. "
+    "Stations with missing measurements remain visible in the quality checks."
 )
 
 st.caption(
-    "Average of valid hourly measurements "
-    "during the selected period. "
-    "Stations with missing data may have "
-    "less representative averages."
+    "Using the stations selected at the top of the dashboard: "
+    + ", ".join(station_labels[code] for code in comparison_codes)
+    + ". Change the selection in Section 1."
 )
+comparison_station = comparison_codes[1] if len(comparison_codes) > 1 else None
 
-average_data = chart_summary.dropna(
-    subset=["average_value"]
-).copy()
+# Include all stations in the summary, even if every measurement is null.
+summary_rows = []
+for code in selected_codes:
+    site_data = period_data[period_data["site_code"] == code]
+    valid_hours = int(site_data["value"].count())
+    coverage = 100 * valid_hours / expected_period_hours
+    valid_rows = site_data.dropna(subset=["value"])
+    latest_in_period = valid_rows["measured_at"].max() if not valid_rows.empty else pd.NaT
+    metadata = pollutant_data[pollutant_data["site_code"] == code].iloc[0]
+    summary_rows.append({
+        "site_code": code,
+        "site_name": metadata["site_name"],
+        "site_type": metadata["site_type"],
+        "local_authority": metadata["local_authority"],
+        "average_value": site_data["value"].mean(),
+        "valid_hours": valid_hours,
+        "expected_hours": expected_period_hours,
+        "missing_hours": max(0, expected_period_hours - valid_hours),
+        "completeness_pct": round(coverage, 1),
+        "data_quality": classify_coverage(valid_hours, expected_period_hours),
+        "latest_valid_reading": latest_in_period,
+        "freshness": (
+            "No valid readings" if pd.isna(latest_in_period)
+            else classify_freshness(
+                latest_in_period,
+                latest_stored_time + pd.Timedelta(hours=1),
+            )
+        ),
+    })
+summary = pd.DataFrame(summary_rows)
+chosen = summary.set_index("site_code").loc[comparison_codes].copy()
+chosen["station_label"] = [chart_labels[c] for c in chosen.index]
 
-if average_data.empty:
-
+# Explain unavailable comparisons once, without cluttering the page.
+unavailable_codes = [
+    code for code in comparison_codes
+    if chosen.loc[code, "valid_hours"] == 0
+]
+limited_codes = [
+    code for code in comparison_codes
+    if 0 < chosen.loc[code, "completeness_pct"] < 75
+]
+if unavailable_codes:
+    missing_names = ", ".join(station_labels[code] for code in unavailable_codes)
     st.info(
-        "No stations meet the selected "
-        "coverage requirement."
+        f"**Data availability:** {len(comparison_codes) - len(unavailable_codes)} "
+        f"of {len(comparison_codes)} selected stations have valid hourly readings. "
+        f"**No measurements for this period:** {missing_names}. "
+        "These stations remain in the selection and data-quality table, "
+        "but cannot appear as pollution values on the charts. "
+        "Missing data is not zero pollution."
+    )
+if limited_codes:
+    st.warning(
+        "**Limited coverage:** " + "; ".join(
+            f"{station_labels[code]} ({chosen.loc[code, 'completeness_pct']:.1f}%)"
+            for code in limited_codes
+        ) + ". Interpret their averages cautiously."
     )
 
+average_data = chosen.dropna(subset=["average_value"]).reset_index()
+if average_data.empty:
+    st.info("There are no valid measurements to compare.")
 else:
-
-    average_chart = (
+    bar = (
         alt.Chart(average_data)
         .mark_bar()
         .encode(
-            x=alt.X(
-                "average_value:Q",
-                title=(
-                    "Average concentration (µg/m³)"
-                ),
-                scale=alt.Scale(zero=True),
-            ),
-            y=alt.Y(
-                "chart_label:N",
-                title="Monitoring station",
-                sort="-x",
-            ),
+            x=alt.X("average_value:Q", title="Average valid hourly NO₂ (µg/m³)",
+                    scale=alt.Scale(zero=True)),
+            y=alt.Y("station_label:N", title=None, sort="-x"),
+            color=alt.Color("station_label:N", legend=None),
             tooltip=[
-                alt.Tooltip(
-                    "site_name:N",
-                    title="Station",
-                ),
-                alt.Tooltip(
-                    "average_value:Q",
-                    title="Average",
-                    format=".2f",
-                ),
-                alt.Tooltip(
-                    "completeness_pct:Q",
-                    title="Coverage (%)",
-                    format=".1f",
-                ),
+                alt.Tooltip("station_label:N", title="Station"),
+                alt.Tooltip("average_value:Q", title="Average", format=".2f"),
+                alt.Tooltip("completeness_pct:Q", title="Coverage (%)", format=".1f"),
             ],
         )
-        .properties(
-            height=max(
-                160,
-                len(average_data) * 45,
+        .properties(height=max(125, len(average_data) * 44))
+    )
+    st.altair_chart(bar, width="stretch")
+    st.caption(
+        "These are means of available valid hourly readings, not daily WHO "
+        "guideline measurements. Different station environments may explain differences."
+    )
+
+if selected_period != "24 hours":
+    with st.expander("Show available daily NO₂ trends for selected stations"):
+        trend_rows = []
+        dates = pd.date_range(
+            period_start_day,
+            latest_stored_time.normalize() - pd.Timedelta(days=1),
+            freq="D",
+        )
+        for code in comparison_codes:
+            station_rows = period_data[period_data["site_code"] == code].copy()
+            station_rows["date"] = station_rows["measured_at"].dt.floor("D")
+            daily = station_rows.groupby("date", as_index=False).agg(
+                daily_average=("value", "mean"),
+                valid_hours=("value", "count"),
             )
+            daily.loc[daily["valid_hours"] < 18, "daily_average"] = float("nan")
+            full_dates = pd.DataFrame({"date": dates}).merge(
+                daily, on="date", how="left",
+            )
+            full_dates["station"] = chart_labels[code]
+            trend_rows.append(full_dates)
+        trend_data = pd.concat(trend_rows, ignore_index=True)
+        # Keep missing stations in the quality table, not in the line-chart legend.
+        plotted_codes = [
+            code for code in comparison_codes
+            if trend_data.loc[
+                trend_data["station"] == chart_labels[code],
+                "daily_average",
+            ].notna().any()
+        ]
+        if plotted_codes:
+            trend_data = trend_data[
+                trend_data["station"].isin([chart_labels[code] for code in plotted_codes])
+            ].copy()
+            st.caption(
+                f"**{len(plotted_codes)} of {len(comparison_codes)} selected stations** "
+                "have sufficient daily data to draw a trend. "
+                "Only these stations appear in the legend."
+            )
+            trend_chart = (
+                alt.Chart(trend_data)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("date:T", title="Date (UTC)", axis=alt.Axis(format="%d %b", labelAngle=0, tickCount="day")),
+                    y=alt.Y("daily_average:Q", title="Daily average NO₂ (µg/m³)",
+                            scale=alt.Scale(zero=True)),
+                    color=alt.Color(
+                        "station:N", title="Stations with plotted data",
+                        scale=alt.Scale(domain=[chart_labels[code] for code in plotted_codes]),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("date:T", title="Date"),
+                        alt.Tooltip("station:N", title="Station"),
+                        alt.Tooltip("daily_average:Q", title="µg/m³", format=".2f"),
+                    ],
+                )
+            )
+            st.altair_chart(trend_chart, width="stretch")
+        else:
+            st.info("No selected station has enough valid hourly data for daily trends.")
+        st.caption(
+            "Each point is a daily average based on at least 18 valid hourly readings. "
+            "Gaps indicate insufficient data; the final incomplete day is excluded. "
+            "The legend includes only stations with plotted readings."
         )
-    )
-
-    st.altair_chart(
-        average_chart,
-        width="stretch",
-    )
-
 
 # =========================================================
-# DATA COMPLETENESS CHART
-# =========================================================
-
-st.markdown("#### Data completeness")
-
-st.caption(
-    "Percentage of expected hours containing "
-    "a valid measurement. All selected stations "
-    "are shown, including those excluded from "
-    "the pollution charts."
-)
-
-coverage_chart = (
-    alt.Chart(summary)
-    .mark_bar()
-    .encode(
-        x=alt.X(
-            "completeness_pct:Q",
-            title="Valid hourly measurements (%)",
-            scale=alt.Scale(
-                domain=[0, 100]
-            ),
-        ),
-        y=alt.Y(
-            "chart_label:N",
-            title="Monitoring station",
-            sort="-x",
-        ),
-        tooltip=[
-            alt.Tooltip(
-                "site_name:N",
-                title="Station",
-            ),
-            alt.Tooltip(
-                "valid_hours:Q",
-                title="Valid hours",
-            ),
-            alt.Tooltip(
-                "expected_hours:Q",
-                title="Expected hours",
-            ),
-            alt.Tooltip(
-                "completeness_pct:Q",
-                title="Coverage (%)",
-                format=".1f",
-            ),
-        ],
-    )
-    .properties(
-        height=max(
-            200,
-            len(summary) * 45,
-        )
-    )
-)
-
-st.altair_chart(
-    coverage_chart,
-    width="stretch",
-)
-
-
-# =========================================================
-# HISTORICAL TRENDS - ORIGINAL COMPARISON CHART
-# =========================================================
-
-st.markdown("#### Historical trends")
-
-st.caption(
-    "Daily averages calculated from "
-    "available valid hourly measurements. "
-    "Days with limited coverage may be "
-    "less representative."
-)
-
-trend_data = filtered[
-    filtered["site_code"].isin(
-        chart_summary["site_code"]
-    )
-].dropna(
-    subset=["value"]
-).copy()
-
-trend_data["date"] = (
-    trend_data["measured_at"].dt.date
-)
-
-daily = (
-    trend_data.groupby(
-        ["date", "site_code"],
-        as_index=False,
-    )["value"]
-    .mean()
-)
-
-if daily.empty:
-
-    st.info(
-        "No valid measurements available "
-        "for the trend chart."
-    )
-
-else:
-
-    trend_chart = daily.pivot(
-        index="date",
-        columns="site_code",
-        values="value",
-    )
-
-    trend_chart = trend_chart.rename(
-        columns={
-            code: station_labels[code]
-            for code in trend_chart.columns
-        }
-    )
-
-    st.line_chart(
-        trend_chart,
-        x_label="Date",
-        y_label="Daily average (µg/m³)",
-    )
-
-
-# =========================================================
-# METHODOLOGY AND INTERPRETATION
+# 3. INTERPRETATION
 # =========================================================
 
 st.divider()
+st.header("3. Understand the results")
+st.caption(
+    "The interpretation compares the first two selected stations. "
+    "All selected stations are included in the charts where valid data exists."
+)
+if len(comparison_codes) < 2:
+    st.info("Select a second station in Section 2 to see a written comparison.")
+else:
+    a, b = chosen.loc[comparison_codes[0]], chosen.loc[comparison_codes[1]]
+    if a["valid_hours"] == 0 or b["valid_hours"] == 0:
+        st.write(
+            "At least one of the first two selected stations has no valid readings "
+            "in this period, so a numerical comparison is not possible. "
+            "Missing does not mean zero pollution."
+        )
+    elif min(a["completeness_pct"], b["completeness_pct"]) < 75:
+        st.write(
+            "The data is too incomplete at one or both of the first two stations "
+            "for a dependable comparison using AirLens's 75% minimum-coverage rule."
+        )
+    else:
+        high, low = (a, b) if a["average_value"] >= b["average_value"] else (b, a)
+        st.write(
+            f"**{station_labels[high.name]}** recorded the higher average "
+            f"({high['average_value']:.1f} µg/m³), compared with "
+            f"**{station_labels[low.name]}** ({low['average_value']:.1f} µg/m³). "
+            "Both have at least 75% valid hourly coverage for this period."
+        )
 
-with st.expander("How to interpret the data"):
+excluded = summary[summary["completeness_pct"] < 75]
+if not excluded.empty:
+    details = "; ".join(
+        f"{row.site_name}: {row.completeness_pct:.1f}%"
+        for row in excluded.itertuples(index=False)
+    )
+    st.caption(
+        f"Other stations with limited or no valid data: {details}. "
+        "They remain visible in the underlying data, but should not be "
+        "treated as equally reliable comparisons."
+    )
+st.write(
+    "**Health context:** The WHO 2021 24-hour NO₂ reference is 25 µg/m³ "
+    "(99th percentile of daily means over a year). It is not an hourly limit "
+    "or a personalized asthma safety threshold."
+)
+st.write(
+    "**Location context:** Roadside, urban-background and suburban stations "
+    "measure different environments. No individual station represents an entire borough."
+)
+st.markdown(
+    "Sources: [London Air Quality Network](https://www.londonair.org.uk/) · "
+    "[WHO guidance](https://www.ncbi.nlm.nih.gov/books/NBK574591/table/ch3.tab21/) · "
+    "[UK Daily Air Quality Index](https://uk-air.defra.gov.uk/air-pollution/daqi)"
+)
+
+# =========================================================
+# 4. TRANSPARENT UNDERLYING DATA
+# =========================================================
+
+st.divider()
+st.header("4. Explore the underlying data")
+with st.expander("Show all four stations, data-quality checks and methodology"):
+    st.write(
+        "This is the full evidence behind the comparison, including stations "
+        "with missing measurements."
+    )
+    counts = summary["data_quality"].value_counts()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Good coverage", int(counts.get("Good coverage", 0)))
+    c2.metric("Moderate coverage", int(counts.get("Moderate coverage", 0)))
+    c3.metric("Low coverage", int(counts.get("Low coverage", 0)))
+    c4.metric("No valid data", int(counts.get("No valid data", 0)))
+
+    table = summary[[
+        "site_name", "site_type", "average_value", "valid_hours",
+        "missing_hours", "expected_hours", "completeness_pct",
+        "data_quality", "freshness", "latest_valid_reading",
+    ]].rename(columns={
+        "site_name": "Monitoring station", "site_type": "Site type",
+        "average_value": "Average NO₂ (µg/m³)", "valid_hours": "Valid hours",
+        "missing_hours": "Missing hours", "expected_hours": "Expected hours",
+        "completeness_pct": "Coverage (%)", "data_quality": "Data quality",
+        "freshness": "Freshness", "latest_valid_reading": "Latest valid in period",
+    })
+    st.dataframe(table, width="stretch", hide_index=True)
+
+    st.subheader("Data completeness by station")
+    coverage_chart = (
+        alt.Chart(summary.assign(
+            station_label=summary["site_code"].map(station_labels)
+        ))
+        .mark_bar()
+        .encode(
+            x=alt.X("completeness_pct:Q", title="Coverage (%)",
+                    scale=alt.Scale(domain=[0, 100])),
+            y=alt.Y("station_label:N", title=None, sort="-x"),
+            tooltip=[
+                alt.Tooltip("station_label:N", title="Station"),
+                alt.Tooltip("valid_hours:Q", title="Valid hours"),
+                alt.Tooltip("expected_hours:Q", title="Expected hours"),
+                alt.Tooltip("completeness_pct:Q", title="Coverage (%)", format=".1f"),
+            ],
+        )
+        .properties(height=max(160, len(summary) * 45))
+    )
+    st.altair_chart(coverage_chart, width="stretch")
+
+    st.subheader("Latest stored readings across all stations")
+    for code in selected_codes:
+        if code in latest_valid.index:
+            rec = latest_valid.loc[code]
+            st.write(
+                f"**{station_labels[code]}:** {rec['value']:.2f} µg/m³ "
+                f"at {rec['measured_at']:%d %b %Y %H:%M} UTC"
+            )
+        else:
+            st.write(f"**{station_labels[code]}:** no valid stored measurement")
 
     st.markdown("""
-**Data completeness**
+**Coverage:** Percentage of expected hourly measurements with a valid numeric value.
+AirLens defines good as ≥90%, moderate as 75–<90%, low as >0–<75%,
+and no valid data as 0%. These are project rules, not official LAQN ratings.
 
-Completeness is the percentage of expected hourly
-observations that contain a valid numerical measurement.
+**Freshness:** In this table, a valid reading in the final two days of the
+selected period is considered recent. This does not mean the data is live.
 
-- Good coverage: at least 90%.
-- Moderate coverage: 75% to below 90%.
-- Low coverage: above 0% to below 75%.
-- No valid data: 0%.
+**Daily averages:** AirLens requires at least 18 valid hourly measurements
+on a completed UTC day. Days with insufficient data are not shown as zero.
 
-These thresholds are defined for AirLens London.
-They are not official LAQN data-quality ratings.
+**Pipeline:** LAQN API → saved raw JSON snapshots → validation and
+idempotent deduplication → DuckDB → this Streamlit dashboard.
+The dashboard does not automatically fetch new API readings.
 
-**Freshness**
-
-The latest-reading cards classify a reading as recent
-if it was recorded within the last 48 hours.
-
-In the detailed comparison table, freshness instead
-indicates whether a station has a valid measurement
-within the final two days of the selected reporting period.
-
-Neither classification indicates a live measurement.
-
-**Monitoring environments**
-
-Roadside, urban-background and suburban monitoring
-stations measure different environments. Their
-readings should be interpreted in that context.
-
-**Limitations**
-
-The dashboard presents measurements from individual
-monitoring stations, not borough-wide pollution estimates.
-
-Missing measurements may affect historical averages,
-and daily averages can hide variation between hours.
-
-The Station Explorer requires at least 18 valid hourly
-readings to display a daily average. The original
-historical comparison chart uses available valid hours
-and may therefore show days with lower coverage.
-
-**WHO guidelines**
-
-The WHO 2021 24-hour NO₂ guideline is 25 µg/m³.
-It is assessed using the 99th percentile of daily
-mean concentrations over a year.
-
-A single day's reading above the guideline does
-not establish annual non-compliance.
-
-The WHO guideline is not a personalized health
-threshold for someone with asthma.
-
-**Data engineering**
-
-AirLens extracts measurements from the LAQN API,
-stores raw snapshots, validates and deduplicates
-measurements, and loads them into DuckDB.
-
-The dashboard reads the processed database.
-It does not automatically retrieve new API data.
+**Limitations:** Station-level results are not borough-wide exposure estimates.
+Missing data may bias averages. WHO guidance is not a personalized medical threshold.
 """)
 
 st.caption(
-    "Data source: London Air Quality Network, "
-    "Imperial College London Environmental Research Group."
+    f"Data source: London Air Quality Network (Imperial College London). "
+    f"Latest stored measurement timestamp: {latest_stored_time:%d %b %Y, %H:%M} UTC. "
+    "Not necessarily live."
 )
