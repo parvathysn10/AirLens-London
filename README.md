@@ -1,293 +1,258 @@
 # AirLens London
 
-**A London air quality dashboard built with Python, DuckDB and Streamlit, with a focus on data reliability.**
+**Exploring London's air quality through reliable, transparent data.**
 
-AirLens London is a data engineering project that collects historical air pollution measurements from the London Air Quality Network (LAQN), stores the original API responses, processes the data using Python and DuckDB, and presents the results through an interactive Streamlit dashboard.
+AirLens London is an end-to-end data engineering project that collects nitrogen dioxide (NO₂) measurements from the London Air Quality Network (LAQN), processes them using Python and DuckDB, and presents them through an interactive Streamlit dashboard.
 
-The project looks at a problem that is easy to overlook when comparing environmental data: two monitoring stations might have different average pollution levels, but those averages are not necessarily equally reliable.
+The key idea is simple: **a low pollution average can be misleading if most measurements are missing.** AirLens shows pollution levels alongside data completeness to help users understand and compare air quality measurements.
 
-For example, one station might have measurements for almost every hour, while another might have large gaps in its data. Comparing their averages without considering those gaps could give users the wrong impression.
+**Technologies:** Python | REST API | DuckDB | SQL | Pandas | Streamlit | Pytest
 
-AirLens London addresses this by showing pollution measurements alongside data completeness, monitoring-site information and freshness indicators.
+## About me
 
-## 01. What I built and who for
+I have a Master's degree in Integrated Engineering, covering mechanical, electrical and electronic engineering. This multidisciplinary background developed my interest in solving technical problems using structured and analytical approaches, as well as programming and working with data.
 
-AirLens London is intended for people who want to explore historical air pollution measurements at different locations across London. This could include residents, commuters or people considering where to live, work or visit.
+I am interested in data engineering because it combines technical problem-solving with transforming raw data into reliable and useful outputs. I am applying to The Information Lab to develop these skills further through practical projects, continuous learning and exposure to real-world data problems.
 
-The dashboard allows users to:
+I built AirLens London to explore this interest through an end-to-end project, from extracting and validating air quality measurements to data modelling, SQL analysis and an interactive dashboard.
 
-- Compare average nitrogen dioxide (NO₂) measurements across selected London monitoring stations.
-- Explore how pollution measurements change over time.
-- See how much data is available for each station.
-- Identify stations with missing or incomplete measurements.
-- Check whether a station has recent valid readings within the selected reporting period.
-- Compare different monitoring environments, including roadside, urban background and suburban locations.
-- Exclude stations with insufficient data coverage from selected charts.
+---
 
-The main aim is to make pollution comparisons more informative by showing users how much confidence they should place in the underlying data.
+## 1. What I built and who for
 
-### Interpreting the results
+I built AirLens London for people who want to understand air quality in the places they live, work or travel through. The dashboard lets users compare NO₂ levels across monitoring stations, explore changes over time and see how complete and up to date the measurements are.
 
-The project compares individual monitoring stations, not entire London boroughs.
+One important consideration is that pollution averages can be misleading when measurements are missing.
 
-A station's measurements reflect conditions at its specific location. They should not automatically be treated as representative of the surrounding borough or of a person's exposure throughout the day.
+For example, comparing two London monitoring stations in October 2026:
 
-The dashboard is designed for exploring historical measurements, rather than providing real-time health advice.
+| October 2026 | Camden | Brent |
+|---|---:|---:|
+| Average NO₂ | 14.26 µg/m³ | 21.57 µg/m³ |
+| Valid hourly readings | 61 / 744 | 734 / 744 |
+| Data completeness | **8.2%** | **98.7%** |
 
-## 02. The data
+```mermaid
+xychart-beta
+    title "October 2026 data completeness (%)"
+    x-axis ["Camden", "Brent"]
+    y-axis "Valid readings (%)" 0 --> 100
+    bar [8.2, 98.7]
+```
 
-**Source:** London Air Quality Network (LAQN), operated by Imperial College London's Environmental Research Group.
+Camden appears to have lower NO₂ levels, but its average is based on only 8.2% of the expected measurements. **Without this context, users could draw misleading conclusions.**
 
-**API documentation:** https://api.erg.ic.ac.uk/AirQuality/help
+This is why AirLens shows data completeness alongside pollution levels, helping users understand how much confidence to place in the comparisons.
+### What users can do
 
-The project uses three types of data from the API.
+- Compare NO₂ measurements across six London monitoring stations.
+- Explore trends over 24 hours, 7 days or 30 days.
+- View data completeness, missing readings and freshness.
+- Exclude low-coverage stations from selected comparisons.
+- Compare daily NO₂ averages against a WHO guideline reference.
 
-| Dataset | Purpose |
+AirLens compares individual monitoring stations, not entire boroughs.
+
+---
+
+## 2. The data
+
+**Source:** [London Air Quality Network (LAQN)](https://www.londonair.org.uk/), operated by Imperial College London's Environmental Research Group.
+
+**API:** https://api.erg.ic.ac.uk/AirQuality
+
+The pipeline retrieves monitoring-site metadata, pollutant information and hourly NO₂ measurements.
+
+### Selected stations
+
+| Code | Monitoring station |
 |---|---|
-| Monitoring-site metadata | Provides station names, locations, local authorities and monitoring-site types |
-| Site-pollutant metadata | Identifies the pollutants monitored at different stations |
-| Historical measurements | Provides timestamped pollutant observations for a requested period |
+| BL0 | Camden: Bloomsbury |
+| BG1 | Barking and Dagenham: Rush Green |
+| BQ7 | Bexley: Belvedere West |
+| BT8 | Brent: ARK Franklin Primary Academy |
+| RI2 | Richmond: Barnes Wetlands |
+| LB6 | Lambeth: Streatham Green |
 
-### Initial dataset
+### October 2026 results
 
-The current implementation focuses on nitrogen dioxide (NO₂), using four monitoring stations.
+**Period:** 1 to 31 October 2026  
+**Expected:** 744 hourly readings per station  
+**Stored:** 4,434 unique station-hour records
 
-| Station code | Monitoring station | Site type |
-|---|---|---|
-| BL0 | Camden, Bloomsbury | Urban Background |
-| BG1 | Barking and Dagenham, Rush Green | Suburban |
-| BQ7 | Bexley, Belvedere West | Urban Background |
-| BT8 | Brent, ARK Franklin Primary Academy | Roadside |
+| Station | Mean NO₂ (µg/m³) | Valid hours | Completeness |
+|---|---:|---:|---:|
+| Lambeth | 14.90 | 737 | 99.1% |
+| Brent | 21.57 | 734 | 98.7% |
+| Richmond | 11.37 | 734 | 98.7% |
+| Bexley | 11.36 | 711 | 95.6% |
+| Camden | 14.26 | 61 | 8.2% |
+| Barking and Dagenham | N/A | 0 | 0.0% |
 
-The initial reporting period is **1 October to 25 October 2026**, with the end date excluded.
+**Completeness (%) = Valid hourly readings / Expected hourly readings × 100**
 
-This covers 24 days, equivalent to 576 expected hourly observations per station.
+Missing or invalid numerical measurements are stored as `NULL`, not zero. SQL averages exclude these values.
 
-Across the four stations, the database contains 2,304 unique station-hour records for this initial period.
+Barking and Dagenham's missing average does not mean pollution was zero.
 
-Some of these records have missing measurement values. These are retained because missing data is an important part of the analysis.
+---
 
-### Understanding missing data
-
-The pipeline distinguishes between four measures:
-
-- **Returned hours:** The number of hourly records returned by the source.
-- **Valid hours:** The number of records containing usable numerical measurements.
-- **Missing hours:** The number of expected hours without a valid measurement.
-- **Completeness:** The percentage of expected hours containing valid measurements.
-
-Completeness is calculated as:
-
-\[
-\text{Completeness (\%)} = \frac{\text{Valid hours}}{\text{Expected hours}} \times 100
-\]
-
-A station with 100% completeness has a valid measurement for every expected hour in the selected period.
-
-A station with 30% completeness has valid measurements for less than one-third of the period, making its average harder to compare with stations that have much better coverage.
-
-The dashboard highlights these differences rather than treating all averages as equally reliable.
-
-## 03. How it works
+## 3. How it works
 
 ### Pipeline overview
 
-```text
-London Air Quality Network API
-                |
-                v
-        Python extraction
-          src/extract.py
-                |
-                v
-        Raw JSON snapshots
-            data/raw/
-                |
-                v
-       Python transformation
-         src/transform.py
-                |
-                v
-         DuckDB database
-   data/processed/airlens.duckdb
-                |
-         +------+------+
-         |             |
-         v             v
-     SQL analysis    Streamlit dashboard
-    src/analyse.py         app.py
+```mermaid
+flowchart TD
+    A["LAQN API<br/>Site metadata + hourly NO₂"]
+    B["1. Extract<br/>src/extract.py"]
+    C["Raw JSON snapshots<br/>data/raw/"]
+    D["2. Transform and validate<br/>src/transform.py"]
+    E[("3. Store<br/>DuckDB")]
+    F["4. Analyse with SQL<br/>src/analyse.py"]
+    G["5. Visualize<br/>app.py: Streamlit"]
+
+    A --> B --> C --> D --> E
+    E --> F --> G
+    E --> G
 ```
 
-The main pipeline is controlled by `run_pipeline.py`.
+`run_pipeline.py` runs the extraction, transformation and analysis stages in sequence.
 
-It runs the extraction, transformation and analysis scripts in sequence, so the complete process can be executed with one command.
+### 1. Extract: `src/extract.py`
 
-### Step 1. Extract data from the API
+Retrieves data from the LAQN API and saves the original responses as JSON.
 
-**File:** `src/extract.py`
+- Handles request timeouts and temporary API errors using retries.
+- Preserves raw responses for reproducibility.
+- Saves refreshed responses as separate snapshots rather than overwriting earlier files.
 
-The extraction script sends requests to the LAQN API to retrieve:
+### 2. Transform and validate: `src/transform.py`
 
-1. Monitoring-site metadata.
-2. Site-pollutant metadata.
-3. Historical measurements for the selected stations and date range.
+Parses the raw JSON, validates measurements and loads them into DuckDB.
 
-The API responses are saved as JSON files.
+```mermaid
+flowchart TD
+    A["Read JSON snapshot"]
+    B{"File already processed<br/>and unchanged?"}
+    C["Skip file"]
+    D["Parse and validate measurements"]
+    E["Preserve missing values as NULL"]
+    F{"Measurement already exists?"}
+    G["Insert new reading"]
+    H{"Newer corrected reading?"}
+    I["Update existing reading"]
+    J["Keep existing reading"]
+    K["Record ingestion results"]
 
-Measurement files are stored in:
-
-```text
-data/raw/measurements/
+    A --> B
+    B -->|Yes| C
+    B -->|No| D --> E --> F
+    F -->|No| G --> K
+    F -->|Yes| H
+    H -->|Yes| I --> K
+    H -->|No| J --> K
 ```
 
-Keeping the raw responses means the original source data is available for inspection and reprocessing.
+**Key design decisions:**
 
-For normal runs, the extraction script checks whether a measurement file already exists for the requested station and date range. If it exists, the script skips that download.
+- **Validation:** Rejects unusable numerical values without treating missing data as zero.
+- **Deduplication:** Uses station, pollutant and timestamp as the unique measurement key.
+- **Incremental processing:** SHA-256 hashes identify previously processed snapshots.
+- **Historical corrections:** Newer data can update existing measurements.
+- **Transactions:** Protect the database from partial ingestion.
 
-This avoids repeatedly requesting data that has already been saved.
+### 3. Store: DuckDB
 
-### Step 2. Refresh historical measurements
+The database contains five tables:
 
-Historical data can change if a monitoring network corrects or updates previously reported values.
+```mermaid
+flowchart TB
+    S["monitoring_sites<br/>Station metadata"]
+    P["site_pollutants<br/>Station and pollutant information"]
+    M["measurements<br/>Hourly readings"]
+    R["ingestion_runs<br/>Processing results"]
+    H["processed_snapshots<br/>File hashes and history"]
 
-AirLens London supports an optional `--refresh` argument to download new copies of historical measurements.
-
-Instead of overwriting the original measurement files, the script saves refreshed responses with timestamps in their filenames.
-
-For example:
-
-```text
-BL0_NO2_2026-10-01_2026-10-08.json
-
-BL0_NO2_2026-10-01_2026-10-08_20261025T183036869744Z.json
+    S -->|"site_code"| M
+    S -->|"site_code"| P
+    P -->|"site + pollutant"| M
+    R -.->|"Ingestion tracking"| M
+    H -.->|"Snapshot tracking"| M
 ```
 
-This makes it possible to retain different versions of the data retrieved at different times.
-
-During transformation, saved measurement snapshots are processed in chronological snapshot order so newer values can replace earlier values in the database.
-
-Refreshing is currently a manual process. The pipeline does not yet run automatically on a schedule.
-
-### Step 3. Transform and load into DuckDB
-
-**File:** `src/transform.py`
-
-The transformation script reads the saved JSON files, extracts the fields needed for analysis and loads the resulting records into DuckDB.
-
-DuckDB was chosen because it provides SQL-based analysis within a local Python project without requiring a separate database server.
-
-It also makes it straightforward to work with structured data, perform joins and calculate summary statistics.
-
-The database contains four main tables.
+*Simplified logical diagram. Dashed lines represent processing and snapshot tracking rather than enforced foreign keys.*
 
 | Table | Purpose |
 |---|---|
-| `monitoring_sites` | Stores monitoring station information |
-| `site_pollutants` | Stores relationships between stations and pollutants |
-| `measurements` | Stores hourly pollutant measurements |
-| `ingestion_runs` | Records the results of transformation runs |
+| `monitoring_sites` | Station names and metadata |
+| `site_pollutants` | Pollutants monitored at each station |
+| `measurements` | Hourly measurements and timestamps |
+| `ingestion_runs` | Insert, update and processing counts |
+| `processed_snapshots` | Processed file hashes and provenance |
 
-The transformation handles missing measurement values and records how many observations were inserted, updated, unchanged or rejected.
+The `measurements` table uses a composite primary key: `(site_code, pollutant_code, measured_at)`.
 
-### Preventing duplicate measurements
+### 4. Join and analyse: `src/analyse.py`
 
-Each measurement is identified using a combination of three fields:
+SQL joins measurements to station metadata and calculates pollution averages and coverage.
 
-```text
-(site_code, pollutant_code, measured_at)
+```mermaid
+flowchart LR
+    A["measurements"]
+    B["monitoring_sites"]
+    C["JOIN on site_code"]
+    D["GROUP BY station"]
+    E["Mean NO₂<br/>Valid hours<br/>Missing hours<br/>Completeness"]
+
+    A --> C
+    B --> C
+    C --> D --> E
 ```
 
-Together, these identify a pollutant measurement at a particular monitoring station and timestamp.
+Key SQL calculations include:
 
-The transformation checks this combination when loading records.
+- `AVG(value)`: Average valid NO₂ concentration.
+- `COUNT(value)`: Number of valid measurements.
+- `COUNT(*) - COUNT(value)`: Stored records with missing values.
+- Valid hours divided by expected hours: Overall completeness.
 
-- If the measurement does not already exist, it is inserted.
-- If it exists but its value has changed, it can be updated.
-- If it exists and has not changed, no new measurement is inserted.
+Expected hours also account for timestamps with no returned record.
 
-This allows the pipeline to process the same raw data repeatedly without creating duplicate measurements.
+### 5. Visualize: `app.py`
 
-### Ingestion logging
+The Streamlit dashboard displays station comparisons, historical trends, data completeness, freshness and missing-data warnings.
 
-Each transformation run is recorded in the `ingestion_runs` table.
+#### WHO guideline comparison
 
-The script reports the number of inserted, updated, unchanged and rejected records.
+The dashboard includes the **WHO 24-hour NO₂ guideline of 25 µg/m³** to provide context for daily pollution averages.
 
-For example, after refreshing the October data, the pipeline reported:
+- **Daily averages:** The guideline applies to a 24-hour period, not individual hourly readings.
+- **Data quality:** A daily average requires at least 18 valid hours (75% completeness, a project-defined rule).
+- **Limitation:** The guideline is not a simple safe/unsafe threshold, and station readings do not represent personal exposure.
 
-```text
-INGESTION SUMMARY
-Inserted: 0
-Updated: 0
-Unchanged: 6240
-Rejected: 0
+**AirLens helps users explore and better understand local air quality, but should not be used for personal health or medical decisions.**
 
-DATABASE SUMMARY
-monitoring_sites: 258 rows
-site_pollutants: 646 rows
-measurements: 2304 rows
-ingestion_runs: 7 rows
-```
+### Testing and data quality
 
-The 6,240 unchanged records reflect observations processed across multiple saved snapshots, rather than 6,240 unique measurements.
-
-The database still contained 2,304 unique measurements.
-
-This demonstrates that rerunning the transformation does not create duplicate measurement rows. The refresh test did not encounter any changed source values, so it reported zero updates.
-
-### Step 4. Analyse the data using SQL
-
-**File:** `src/analyse.py`
-
-The analysis script queries DuckDB to compare measurements across the selected monitoring stations.
-
-It calculates:
-
-- Returned hours.
-- Valid hours.
-- Missing hours.
-- Average pollutant concentration.
-- Percentage completeness.
-
-The user can select the reporting period and pollutant using command-line arguments.
-
-This separates the analysis from the extraction and transformation stages, making the pipeline easier to understand and maintain.
-
-### Step 5. Display the results
-
-**File:** `app.py`
-
-The Streamlit dashboard provides a visual interface for exploring the processed data.
-
-It includes station comparisons, historical trends and data-quality information.
-
-Rather than only displaying average pollution values, the dashboard also classifies the completeness of each station's data.
-
-| Completeness | Classification |
+| Check | Verified result |
 |---|---|
-| 90% or above | Good |
-| 75% to below 90% | Moderate |
-| Above 0% to below 75% | Low |
-| 0% | No valid data |
+| Automated tests | 7 passed |
+| Duplicate measurement keys | 0 |
+| Repeat pipeline runs | No duplicate measurements |
+| Historical corrections | Insert and update logic verified |
+| Missing values | Preserved as missing |
 
-These thresholds were defined for this project to make missing-data patterns easier to interpret. They are not official LAQN data-quality classifications.
+A verified incremental run inserted **6 new readings**, updated **3 existing readings** and left **393 unchanged**.
 
-The dashboard also identifies whether the latest valid measurement falls within the final two days of the selected reporting period.
+---
 
-Users can choose to exclude stations with less than 75% completeness from selected charts.
-
-This helps prevent comparisons from being dominated by stations with very limited data, while still making their missingness visible.
-
-## 04. How to run it
+## 4. How to run it
 
 ### Requirements
 
 - Python 3.14
-- Git
-- Internet access for downloading data
-- A terminal, such as PowerShell or the VS Code integrated terminal
-
-The project was developed using Windows and Visual Studio Code.
+- Internet connection for API extraction
+- No API key required
 
 ### 1. Clone the repository
 
@@ -296,189 +261,80 @@ git clone https://github.com/parvathysn10/AirLens-London.git
 cd AirLens-London
 ```
 
-### 2. Create a virtual environment
+### 2. Install dependencies
 
-On Windows:
+On Windows PowerShell:
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-```
-
-### 3. Install the dependencies
-
-```powershell
 python -m pip install -r requirements.txt
 ```
 
-### 4. Run the complete pipeline
+### 3. Run the pipeline
 
-```powershell
+```bash
 python run_pipeline.py
 ```
 
-By default, this processes measurements from 1 October to 25 October 2026, excluding the end date.
+For a specific period (end date exclusive):
 
-To choose a different period:
-
-```powershell
-python run_pipeline.py --start 2026-10-01 --end 2026-10-08
+```bash
+python run_pipeline.py --start 2026-10-01 --end 2026-11-01
 ```
 
-The pipeline then runs extraction, transformation and analysis.
+### 4. Refresh the data
 
-### 5. Refresh historical measurements
+AirLens supports incremental updates and historical refreshes without rebuilding the entire database.
 
-To download new snapshots without overwriting the original measurement files:
+To retrieve recent measurements:
 
-```powershell
-python run_pipeline.py --start 2026-10-01 --end 2026-10-08 --refresh
+```bash
+python run_pipeline.py --latest
 ```
 
-Without `--refresh`, the pipeline reuses existing measurement files for the requested period.
+To refresh a specific historical period:
 
-```powershell
-python run_pipeline.py --start 2026-10-01 --end 2026-10-08
+```bash
+python run_pipeline.py --start 2026-10-01 --end 2026-11-01 --refresh
 ```
 
-Both commands run the transformation and analysis stages.
+New measurements are inserted, corrected readings are updated and unchanged records are retained. Raw API responses are saved as separate JSON snapshots.
 
-### 6. Open the dashboard
+### 5. Launch the dashboard
 
-```powershell
+```bash
 python -m streamlit run app.py
 ```
 
-Streamlit will display a local URL in the terminal.
+Open the local URL shown in the terminal. Reload the dashboard after refreshing the data to view updated results.
 
-Open the URL in a browser to view the dashboard.
+### 6. Run tests and checks
 
-### 7. Run individual scripts
-
-Each part of the pipeline can also be run separately.
-
-**Extract:**
-
-```powershell
-python src/extract.py --start 2026-10-01 --end 2026-10-08
+```bash
+python -m pip install pytest
+python -m pytest -q
+python scripts/verify_database.py
 ```
 
-**Transform:**
+The DuckDB database is generated locally and is not committed to GitHub. It can be rebuilt from the included raw JSON snapshots:
 
-```powershell
+```bash
 python src/transform.py
 ```
 
-**Analyse:**
-
-```powershell
-python src/analyse.py --start 2026-10-01 --end 2026-10-08 --pollutant NO2
-```
-
-### 8. Run the tests
-
-The project includes tests for data-quality classification and measurement handling.
-
-To run the data-quality tests:
-
-```powershell
-python -m tests.test_quality
-```
-
-Additional tests for measurement updates and historical corrections are included in the `tests/` directory.
-
-These should be run and verified before the final submission.
-
-### Example results
-
-The following results were produced for the period 1 October to 8 October 2026.
-
-| Monitoring station | Valid hours | Average NO₂ | Completeness |
-|---|---:|---:|---:|
-| Brent, ARK Franklin Primary Academy | 168 | 25.62 | 100.0% |
-| Bexley, Belvedere West | 145 | 15.76 | 86.3% |
-| Camden, Bloomsbury | 61 | 14.26 | 36.3% |
-| Barking and Dagenham, Rush Green | 0 | N/A | 0.0% |
-
-The results show why data completeness matters.
-
-Brent has a valid measurement for every hour in the selected period, while Camden has valid measurements for only 36.3% of the period.
-
-Rush Green has no valid measurements during this period, so an average cannot be calculated.
-
-Although Camden has a lower reported average than Brent, the difference in completeness means the two averages should not be treated as equally reliable.
-
-These figures reflect the historical data retrieved during development and may change if the source is updated.
-
-### Rebuilding the database
-
-The DuckDB database is generated locally and is not committed as a permanent output.
-
-The repository contains the Python scripts, dependencies and saved raw measurement data needed to rebuild the processed database.
-
-This keeps the original source data separate from generated analytical outputs.
-
-## 05. What I would do next
-
-The current project demonstrates the full process from API extraction to an interactive dashboard. There are several ways it could be extended.
-
-### Add more monitoring stations
-
-Expand the selection to cover more areas of London and different monitoring environments.
-
-I would prioritize stations with good historical data coverage so the comparisons remain useful.
-
-### Automate data collection
-
-Schedule regular API requests to keep the dataset updated without manually running the pipeline.
-
-I would also improve the extraction process so it can identify which date ranges need to be collected.
-
-### Make repeated processing more efficient
-
-The current transformation reads saved measurement snapshots again on each run.
-
-A future improvement would be to track which snapshots have already been processed, reducing unnecessary work.
-
-### Support more pollutants
-
-Extend the pipeline beyond NO₂ to include other pollutants, such as particulate matter, where suitable historical data is available.
-
-### Improve location comparisons
-
-Explore ways to compare nearby monitoring stations and display them geographically, while making the limitations of station-level data clear.
-
-### Expand the analysis
-
-Add longer-term trends, seasonal comparisons and analysis of differences between roadside and background monitoring sites.
-
-### Strengthen testing
-
-Add more automated tests for API errors, missing values, unusual data formats and historical corrections.
-
-### Current limitations
-
-- The initial implementation focuses on four monitoring stations and one pollutant.
-- Some stations have substantial gaps in their historical measurements.
-- Station-level readings are not equivalent to borough-wide pollution estimates.
-- Historical refreshes are initiated manually rather than automatically.
-- Each refresh creates additional raw snapshots, increasing storage and processing requirements.
-- The dashboard is intended for historical exploration, not real-time exposure assessment or regulatory decisions.
-
-These limitations help define the current scope of the project and where further development would be most useful.
-
-## 06. Where AI helped
-
-### Where AI helped
-
-I used AI as a development tool to help understand the LAQN API structure, troubleshoot Python and DuckDB errors, and explore approaches to data cleaning and modelling. I tested suggestions against the actual data and adapted them as the project developed. For example:
-
-- I added data completeness and freshness checks after finding that some monitoring stations had very few valid readings, making their averages potentially misleading.
-- I improved the database logic to prevent duplicate measurements when rerunning the pipeline and to handle updated historical readings.
-- I added timestamped raw JSON snapshots to preserve earlier API responses when refreshing historical data, rather than overwriting them.
-
 ---
 
-**Technologies:** Python, Requests, DuckDB, SQL, Pandas, Streamlit, Git and GitHub.
+## 5. What I would do next
 
-**Data source:** London Air Quality Network, Imperial College London Environmental Research Group.
+- **Online deployment:** Move the database to hosted storage and deploy Streamlit as a public website so users can access AirLens without installing anything.
+- **Automated updates:** Schedule regular API extraction and processing to keep the dashboard updated without manual refreshes.
+- **More pollutants:** Include PM₂.₅, PM₁₀ and other pollutants to provide a broader picture of air quality.
+- **Health-related information:** Explain different pollutants, their potential health effects and relevant WHO guidelines, while distinguishing general information from personal medical advice.
+- **More monitoring stations:** Expand coverage across London and add an interactive map for geographical comparisons.
+- **Weather data:** Integrate temperature, wind and rainfall measurements to explore relationships with pollution levels.
+- **Historical trends:** Support longer time periods and seasonal comparisons.
+- **Improved data monitoring:** Add alerts for missing measurements, outdated data and failed ingestion runs, and show stations with no returned records.
+- **Further testing:** Expand automated tests for API failures, unusual values and database edge cases.
+
+**Current limitations:** AirLens covers six monitoring stations
