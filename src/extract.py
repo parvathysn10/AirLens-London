@@ -35,15 +35,21 @@ def fetch_json(endpoint):
         allowed_methods=["GET"],
     )
 
-    with requests.Session() as session:
-        session.mount(
-            "https://",
-            HTTPAdapter(max_retries=retry_strategy),
-        )
+    try:
+        with requests.Session() as session:
+            session.mount(
+                "https://",
+                HTTPAdapter(max_retries=retry_strategy),
+            )
 
-        response = session.get(url, timeout=60)
-        response.raise_for_status()
-        return response.json()
+            response = session.get(url, timeout=60)
+            response.raise_for_status()
+            return response.json()
+
+    except (requests.RequestException, ValueError) as error:
+        raise RuntimeError(
+            f"Failed to fetch LAQN data from {url}: {error}"
+        ) from error
 
 
 def validate_measurement_response(data, site_code, pollutant):
@@ -95,6 +101,7 @@ def validate_measurement_response(data, site_code, pollutant):
 
 
 def save_json(data, filepath):
+    """Save an API response as a JSON file."""
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
     with open(filepath, "w", encoding="utf-8") as file:
@@ -102,6 +109,7 @@ def save_json(data, filepath):
 
 
 def extract_sites():
+    """Download London monitoring station metadata."""
     endpoint = "Information/MonitoringSites/GroupName=London/Json"
     data = fetch_json(endpoint)
 
@@ -117,6 +125,7 @@ def extract_sites():
 
 
 def extract_site_species():
+    """Download information about which pollutants stations monitor."""
     endpoint = "Information/MonitoringSiteSpecies/GroupName=London/Json"
     data = fetch_json(endpoint)
 
@@ -132,6 +141,7 @@ def extract_site_species():
 
 
 def extract_measurements(start_date, end_date, refresh=False):
+    """Download hourly measurements for each station and pollutant."""
     for site_code, site_name in STATIONS.items():
         for pollutant in POLLUTANTS:
             endpoint = (
