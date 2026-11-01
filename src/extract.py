@@ -21,7 +21,7 @@ STATIONS = {
     "LB6": "Lambeth - Streatham Green",
 }
 
-POLLUTANTS = ["NO2"]
+POLLUTANTS = ["NO2", "PM25", "PM10"]
 
 
 def fetch_json(endpoint):
