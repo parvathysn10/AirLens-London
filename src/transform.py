@@ -1,4 +1,3 @@
-
 import hashlib
 import json
 import math
@@ -12,11 +11,13 @@ DB_PATH = Path("data/processed/airlens.duckdb")
 
 
 def load_json(filepath):
+    """Read one saved API response."""
     with open(filepath, "r", encoding="utf-8") as file:
         return json.load(file)
 
 
 def as_list(value):
+    """Handle API fields that can be missing, single items or lists."""
     if value is None:
         return []
     if isinstance(value, list):
@@ -25,12 +26,14 @@ def as_list(value):
 
 
 def parse_date(value):
+    """Convert an API date into a Python date, or None."""
     if not value:
         return None
     return datetime.strptime(value[:10], "%Y-%m-%d").date()
 
 
 def parse_number(value):
+    """Convert valid numbers to floats and preserve missing values."""
     if value in ("", None):
         return None
 
@@ -64,15 +67,19 @@ def snapshot_priority(filepath):
 
 
 def measurement_files():
+    """Find snapshots and process older downloads before newer ones."""
     files = list((RAW_DIR / "measurements").glob("*.json"))
     return sorted(files, key=snapshot_priority)
 
 
 def file_hash(filepath):
+    """Identify file contents so unchanged snapshots can be skipped."""
     return hashlib.sha256(filepath.read_bytes()).hexdigest()
 
 
 def create_tables(con):
+    """Create the tables needed to store metadata and measurements."""
+    # Primary keys prevent duplicate stations and hourly readings.
     con.execute("""
         CREATE TABLE IF NOT EXISTS monitoring_sites (
             site_code VARCHAR PRIMARY KEY,
@@ -126,7 +133,7 @@ def create_tables(con):
         )
     """)
 
-    # Compatible with an existing database.
+    # Add source tracking to databases created by older versions.
     con.execute("""
         ALTER TABLE measurements
         ADD COLUMN IF NOT EXISTS source_snapshot VARCHAR
@@ -134,10 +141,12 @@ def create_tables(con):
 
 
 def load_sites(con):
+    """Store station names, locations and opening dates."""
     data = load_json(RAW_DIR / "monitoring_sites.json")
     sites = as_list(data["Sites"]["Site"])
 
     for site in sites:
+        # Update existing station details rather than adding duplicates.
         con.execute("""
             INSERT INTO monitoring_sites
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -164,6 +173,7 @@ def load_sites(con):
 
 
 def load_site_pollutants(con):
+    """Store which pollutants each monitoring station measures."""
     data = load_json(RAW_DIR / "site_species.json")
     sites = as_list(data["Sites"]["Site"])
 
@@ -171,6 +181,7 @@ def load_site_pollutants(con):
 
     for site in sites:
         for pollutant in as_list(site.get("Species")):
+            # Keep one record per station and pollutant.
             con.execute("""
                 INSERT INTO site_pollutants
                 VALUES (?, ?, ?, ?, ?)
@@ -206,6 +217,7 @@ def read_snapshot(filepath):
     rejected = 0
 
     for reading in as_list(raw.get("Data")):
+        # Bad individual readings are skipped without losing the whole file.
         try:
             timestamp = reading["@MeasurementDateGMT"]
 
@@ -241,6 +253,7 @@ def migrate_existing_sources(con, files):
 
     This does not change any measurement values.
     """
+    # Only run this migration if some rows have no source recorded.
     missing = con.execute("""
         SELECT COUNT(*)
         FROM measurements
@@ -300,6 +313,7 @@ def migrate_existing_sources(con, files):
 
 
 def load_measurements(con):
+    """Insert new readings and apply corrections from newer snapshots."""
     counts = {
         "inserted": 0,
         "updated": 0,
@@ -320,6 +334,7 @@ def load_measurements(con):
         relative_path = filepath.as_posix()
         current_hash = file_hash(filepath)
 
+        # Compare file contents with the last processed version.
         previous = con.execute("""
             SELECT file_hash
             FROM processed_snapshots
@@ -334,6 +349,7 @@ def load_measurements(con):
         counts["rejected"] += rejected
 
         for site_code, pollutant_code, measured_at, value in records:
+            # Look up the same station, pollutant and hour.
             existing = con.execute("""
                 SELECT value, source_snapshot
                 FROM measurements
@@ -347,6 +363,7 @@ def load_measurements(con):
             ]).fetchone()
 
             if existing is None:
+                # This hour is new, so insert it.
                 con.execute("""
                     INSERT INTO measurements (
                         site_code,
@@ -378,6 +395,7 @@ def load_measurements(con):
                     older_readings_ignored += 1
                     continue
 
+            # Treat two missing values as equal, not as changes.
             same_value = (
                 old_value == value
                 or (old_value is None and value is None)
@@ -404,6 +422,7 @@ def load_measurements(con):
                     ])
 
             else:
+                # A newer snapshot corrected the stored reading.
                 con.execute("""
                     UPDATE measurements
                     SET value = ?,
@@ -421,6 +440,7 @@ def load_measurements(con):
 
                 counts["updated"] += 1
 
+        # Record the processed file hash for the next pipeline run.
         con.execute("""
             INSERT INTO processed_snapshots
             VALUES (?, ?, ?)
@@ -444,6 +464,7 @@ def load_measurements(con):
 
 
 def main():
+    """Run ingestion as one transaction and print the results."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     started_at = datetime.now(timezone.utc)
@@ -452,6 +473,7 @@ def main():
     con = duckdb.connect(str(DB_PATH))
 
     try:
+        # Either save the whole ingestion or roll everything back.
         con.execute("BEGIN TRANSACTION")
 
         create_tables(con)
@@ -460,6 +482,7 @@ def main():
 
         counts = load_measurements(con)
 
+        # Keep a record of how many readings changed in this run.
         con.execute("""
             INSERT INTO ingestion_runs
             VALUES (?, ?, ?, ?, ?, ?)
