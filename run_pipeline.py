@@ -8,8 +8,11 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
 
+POLLUTANTS = ["NO2", "PM25", "PM10"]
+
 
 def run_script(script, arguments=None):
+    """Run a pipeline script and stop if it fails."""
     command = [sys.executable, str(PROJECT_DIR / script)]
 
     if arguments:
@@ -117,18 +120,21 @@ def main():
     if args.refresh or args.latest:
         extract_args.append("--refresh")
 
+    # Extract and store the measurements before analysing them.
     run_script("src/extract.py", extract_args)
 
     run_script("src/transform.py")
 
-    run_script(
-        "src/analyse.py",
-        [
-            "--start", str(start_date),
-            "--end", str(end_date),
-            "--pollutant", "NO2",
-        ],
-    )
+    # Run the SQL analysis separately for each pollutant.
+    for pollutant in POLLUTANTS:
+        run_script(
+            "src/analyse.py",
+            [
+                "--start", str(start_date),
+                "--end", str(end_date),
+                "--pollutant", pollutant,
+            ],
+        )
 
     print(
         "\nAirLens London pipeline completed successfully",
