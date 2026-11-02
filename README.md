@@ -11,17 +11,19 @@ AirLens London is an end-to-end data engineering project that retrieves measurem
 
 ## About me
 
-I graduated from Cardiff University with an MEng in Integrated Engineering (2:1), covering electrical, electronic and mechanical engineering. My multidisciplinary background developed my interest in programming, analytical problem-solving and using data to understand real-world systems.
+I have a Master's degree in Integrated Engineering, covering mechanical, electrical and electronic engineering. This multidisciplinary background developed my interest in solving technical problems using structured and analytical approaches, as well as programming and working with data.
 
-I am particularly interested in data engineering because it combines programming and technical problem-solving with the challenge of transforming raw, sometimes unreliable data into useful information.
+I am interested in data engineering because it combines technical problem-solving with transforming raw data into reliable and useful information.
 
-I am applying to The Information Lab because I want to develop these skills through practical projects, structured learning and experience solving real business problems.
+I built AirLens London to explore this interest through an end-to-end data engineering project, from collecting and validating air quality measurements to data modelling, SQL analysis and creating an interactive dashboard.
 
-I built AirLens London to demonstrate this interest through a complete data engineering workflow, from API extraction and validation to relational data modelling, SQL analysis, automated testing and an interactive dashboard.
+## 01. What AirLens does and who it is for
 
-## 01. What I built and who for
+Air pollution can vary by location and over time. Someone comparing places near their home, regular commute or workplace may want to know whether pollution was consistently higher at one monitoring location, whether there were unusual days, or how levels changed over a week or month. Historical measurements help reveal these patterns rather than relying on a single reading. They do not measure any individual's personal exposure or predict the air quality of a particular journey.
 
-AirLens is designed for residents, commuters and curious Londoners who want to explore **historical measurements at individual monitoring stations**, rather than make decisions from a pollution average alone.
+AirLens lets London residents, commuters and anyone interested in air quality explore past readings at six monitoring stations. It focuses on nitrogen dioxide (NO₂) and particulate matter (PM₂.₅ and PM₁₀), pollutants associated with respiratory and wider health impacts. For background, see the [UK government's guide to air-pollution health effects](https://www.gov.uk/government/publications/health-effects-of-air-pollution/using-the-daily-air-quality-index-daqi).
+
+A key question is not just **what was the average?** but **how many measurements were available to calculate it?** AirLens shows coverage beside concentrations because an average based on a handful of hours may be misleading.
 
 Users can:
 
@@ -35,7 +37,7 @@ Users can:
 
 **Important:** AirLens compares specific monitoring locations, not whole boroughs. It is a historical exploration tool, not a live exposure monitor or personalized health-advice service.
 
-### Why completeness changes the story
+### Why missing measurements matter
 
 The following is a **fixed example from the locally verified October 2026 NO₂ analysis** (1 October inclusive to 1 November exclusive):
 
@@ -63,6 +65,7 @@ These figures are a reproducible example from a particular data snapshot; later 
 ## 02. Data source and scope
 
 **Source:** [London Air Quality Network](https://www.londonair.org.uk/), operated by Imperial College London's Environmental Research Group.
+
 **API:** [LAQN Air Quality API documentation](https://api.erg.ic.ac.uk/AirQuality/help)
 
 The pipeline retrieves three kinds of information:
@@ -75,6 +78,10 @@ The pipeline retrieves three kinds of information:
 
 ### Six selected stations
 
+These stations provide a small, manageable sample across different parts of London and monitoring environments. They were selected to explore contrasting locations and data availability, **not** as a representative sample of every London borough or as a ranking of neighborhoods.
+
+A site's **environment** describes where its monitoring equipment samples air relative to pollution sources: *roadside* is close to traffic, while *urban background* and *suburban* stations reflect different surrounding settings. This can affect measured concentrations, but it does **not** explain why a station has missing data. LAQN's [site-type explanation](https://www.londonair.org.uk/LondonAir/Data-Visualisations/objectivevstime.aspx) provides more context.
+
 | Code | Station | Environment |
 |---|---|---|
 | `BL0` | Camden, Bloomsbury | Urban background |
@@ -86,7 +93,13 @@ The pipeline retrieves three kinds of information:
 
 **Pollutants:** `NO2` (nitrogen dioxide), `PM25` (PM₂.₅ fine particulate matter) and `PM10` (PM₁₀ particulate matter). The pipeline requests all three for the selected stations. **Not every station is listed as monitoring every pollutant**, so the dashboard distinguishes *not listed as monitored* from *monitored but no valid readings*. The LAQN API can return empty placeholder rows even for unmonitored combinations.
 
-For the fixed October 2026 dataset, the database contained **13,392 hourly measurement rows across the three pollutants** (6 stations × 3 pollutants × 744 hours). Some rows have `NULL` values. This row count is **not** a count of valid measurements or operating sensors.
+For October 2026, there are **13,392 possible station-pollutant-hour combinations** (6 stations × 3 pollutants × 744 hours). This is the expected comparison grid, **not** a claim that all 13,392 combinations represent valid measurements or operating sensors. Some pollutants are not monitored at some stations, and unavailable readings may be `NULL`.
+
+### Why coverage is important
+
+Monitoring equipment operates in real-world conditions, so a complete series of valid readings is not guaranteed. LAQN explains that missing data can arise from **routine maintenance, calibration, power cuts, flooding, lightning and equipment faults**. Other monitoring guidance also discusses communication failures and readings being excluded during quality checks. These are **general possibilities**, not confirmed explanations for missing values at any of AirLens's six stations. See [LAQN's data-capture explanation](https://www.londonair.org.uk/LondonAir/Data-Visualisations/objectivevstime.aspx) and [UK air-monitoring quality guidance](https://www.gov.uk/guidance/monitoring-ambient-air-quality-control-and-quality-assurance).
+
+A station that returns only a small number of valid hours may have an average that does not represent the full period. AirLens therefore displays the share of expected hours with valid measurements and flags low coverage rather than silently filling gaps.
 
 ### How coverage is measured
 
@@ -102,19 +115,20 @@ A station's completeness is a **data availability metric**, not a direct measure
 
 ### End-to-end architecture
 
+The flow runs **from top to bottom**, following the same order as the steps below. The raw-data copy is kept so the processing can be repeated or checked later.
+
 ```mermaid
-flowchart LR
-    A["LAQN API<br/>Metadata + hourly NO2 / PM25 / PM10"]
-    B["Extract<br/>src/extract.py"]
-    C["Versioned raw JSON<br/>data/raw/"]
-    D["Validate and transform<br/>src/transform.py"]
-    E[("DuckDB<br/>5 tables")]
-    F["SQL station analysis<br/>src/analyse.py"]
-    G["Interactive dashboard<br/>app.py"]
-    A --> B --> C --> D --> E
-    E --> F
-    E --> G
+flowchart TD
+    A["1. LAQN API<br/>Get station details and hourly readings"]
+    B["2. Python extraction<br/>Save original JSON snapshots"]
+    C["3. Python validation<br/>Clean, check and deduplicate"]
+    D["4. DuckDB<br/>Store readings and processing history"]
+    E["5. SQL analysis<br/>Calculate averages and data coverage"]
+    F["6. Streamlit dashboard<br/>Explore trends, comparisons and gaps"]
+    A --> B --> C --> D --> E --> F
 ```
+
+**In one sentence:** AirLens downloads historical measurements, keeps the original responses, checks and stores the data, uses SQL to calculate meaningful summaries, and displays them with warnings about missing readings.
 
 `run_pipeline.py` orchestrates extraction, transformation and a separate SQL analysis for **each of the three pollutants**. If a required script fails, the pipeline stops rather than reporting a successful run.
 
@@ -122,20 +136,13 @@ flowchart LR
 
 `src/extract.py` requests site metadata, site-pollutant metadata and hourly readings. It validates API responses, uses request timeouts and retries for temporary failures, and saves the original responses as JSON for inspection and reprocessing.
 
-A normal extraction can reuse an existing file for the same request, avoiding unnecessary API calls. With `--refresh`, new responses are saved as **timestamped snapshots**, preserving earlier versions instead of overwriting them. For example:
-
-```text
-BL0_NO2_2026-10-01_2026-10-08.json
-BL0_NO2_2026-10-01_2026-10-08_20261025T183036869744Z.json
-```
-
-Both files describe the same requested period, but the second is a later retrieval. Keeping both makes it possible to inspect the original data and compare it with subsequent corrections. The `--latest` mode explicitly fetches fresh snapshots for the current UTC day and preceding two days. Refreshing is currently manual, not scheduled.
+A normal extraction can reuse an existing response for the same request. When run with `--refresh`, it saves a **new timestamped JSON copy** rather than replacing the old one. This is useful because the source may later correct previously published measurements; keeping older versions lets the pipeline compare and reprocess them. The `--latest` option fetches recent data manually. Automatic scheduled collection is a future improvement.
 
 ### Step 2: Validate and transform
 
 `src/transform.py` parses snapshots, validates values and timestamps, loads station metadata and measurements, and records ingestion results. Invalid/unavailable numerical measurements are not silently converted to zero.
 
-**A key design choice is idempotency:** rerunning the same data should not duplicate measurements. The unique measurement key is:
+**Repeatable ingestion (idempotency)** means that processing the same data twice should not create duplicate measurements. AirLens identifies each measurement using:
 
 ```sql
 PRIMARY KEY (site_code, pollutant_code, measured_at)
@@ -143,25 +150,11 @@ PRIMARY KEY (site_code, pollutant_code, measured_at)
 
 Snapshots are tracked by file hash, and source snapshot order matters when historical measurements are corrected. Newer snapshots can update previous readings, including replacing a previous numeric value with a newly missing value. Transactions help avoid partially committed ingestion runs.
 
-#### Ingestion logging and repeatability
+#### Checking repeat runs and corrections
 
-Each transformation run records inserted, updated, unchanged and rejected observations in `ingestion_runs`. An earlier development run produced:
+The `ingestion_runs` table records how many observations were inserted, updated, unchanged or rejected. A repeat run previously processed **6,240 unchanged observations** across saved snapshots without creating duplicates; the database then held **2,304 unique measurement rows**. These numbers refer to an earlier development run, not the current October dataset.
 
-```text
-INGESTION SUMMARY
-Inserted: 0
-Updated: 0
-Unchanged: 6240
-Rejected: 0
-
-DATABASE SUMMARY
-monitoring_sites: 258 rows
-site_pollutants: 646 rows
-measurements: 2304 rows
-ingestion_runs: 7 rows
-```
-
-**This is a historical example, not the current database size.** The 6,240 unchanged observations were encountered while processing multiple saved snapshots; they were **not 6,240 distinct measurement keys**. At that point, only 2,304 unique measurements were stored. This demonstrates why counting processing events is different from counting unique database records. A separate verified incremental test later inserted **6** readings, updated **3** and left **393** unchanged, showing that historical corrections can also be applied.
+A separate incremental check confirmed **6 inserted**, **3 updated** and **393 unchanged** observations. This matters because newer source snapshots may correct historical values, while unchanged data should not be duplicated.
 
 ```mermaid
 flowchart TD
@@ -325,7 +318,14 @@ python -m pytest -q
 python scripts/verify_database.py
 ```
 
-**Latest local check:** **12 pytest tests passed**. The tests cover API failure handling, numerical validation, coverage and freshness, snapshot priority, historical corrections, idempotency, daily averages and multi-pollutant behavior. Additional standalone test scripts are included under `tests/`; the 12-test count refers specifically to tests collected by pytest.
+**Latest local check:** **12 pytest tests passed**. These check the main behaviors rather than just whether the scripts run:
+
+- **API errors and invalid values:** Fail safely and avoid treating bad measurements as valid readings.
+- **Coverage and freshness:** Classify missing and older measurements correctly.
+- **Repeat runs and snapshot ordering:** Do not duplicate readings; apply newer corrections appropriately.
+- **Daily summaries and pollutants:** Calculate daily averages and support NO₂, PM₂.₅ and PM₁₀.
+
+Additional standalone checks are included in `tests/`; the count of 12 refers specifically to tests collected by pytest.
 
 **Continuous integration:** `.github/workflows/tests.yml` runs the automated tests using **GitHub Actions** on pushes and pull requests with Python 3.12. This tests code changes on a separate machine. It **does not** schedule API collection, refresh the database or deploy the dashboard.
 
@@ -337,15 +337,7 @@ python src/transform.py
 
 Rebuilding from the saved snapshots is different from downloading new data from LAQN.
 
-## 05. What I learned, limitations and next steps
-
-### Engineering decisions and lessons
-
-- **Preserve the raw data:** Keeping original API responses makes transformations auditable and allows later reprocessing.
-- **Treat missingness as information:** `NULL` values and explicit coverage metrics prevent misleading comparisons.
-- **Design for reruns and corrections:** Composite keys, snapshot hashes, version precedence and transactions help keep repeated ingestion reliable.
-- **Test outside the development machine:** GitHub Actions runs the test suite on every push and pull request.
-- **Keep the interface understandable:** Users see monitoring status and coverage alongside charts, rather than just a ranking of pollution averages.
+## 05. Limitations and future improvements
 
 ### Current limitations
 
@@ -359,25 +351,17 @@ Rebuilding from the saved snapshots is different from downloading new data from 
 
 ### Future improvements
 
-1. **Scheduled ingestion:** Run `--latest` automatically on a daily schedule, with appropriate retries and failure notifications.
-2. **Hosted dashboard and database refresh:** Deploy Streamlit and arrange for newly ingested data to become available to the hosted app.
-3. **Monitoring and alerting:** Detect stalled ingestion, outdated station data, unusual missingness and failed scheduled runs.
-4. **Broader test coverage:** Add more malformed API payloads, date-range validation, transaction rollback and dashboard edge-case tests.
-5. **Geographic and longer-term analysis:** Expand station coverage, add a map and investigate seasonal patterns and weather relationships, while retaining coverage checks.
-6. **Storage management:** Introduce an explicit retention/archiving policy for older raw snapshots without losing important provenance.
+1. **Public website:** Deploy the Streamlit dashboard with hosted data so people can explore AirLens without running Python locally.
+2. **Automated data updates:** Schedule the existing `--latest` pipeline using a workflow or another scheduler, with safe access to persistent storage and alerts when a run fails. The current GitHub Actions workflow runs **tests only**, not ingestion or deployment.
+3. **More testing and CI checks:** Expand tests for malformed API responses, transaction failures, date boundaries and dashboard behavior; add code-quality checks and a build/deployment workflow when appropriate.
+4. **More context from other APIs:** Combine pollution measurements with weather data, such as wind, temperature and rainfall, to investigate possible relationships without assuming causation.
+5. **More stations and a map:** Add geographical comparisons and longer seasonal trends, while distinguishing roadside from background locations.
+6. **Better monitoring and storage:** Track data delays and unusually low coverage, and archive old snapshots while preserving provenance.
 
-## 06. Where AI helped
+## 06. AI assistance and verification
 
-I used AI as a **development and learning tool** to understand the LAQN API structure, troubleshoot Python and DuckDB issues, explore data-cleaning and modelling approaches, improve code comments and review possible tests. I tested suggestions against actual API responses, local pipeline runs, database queries and automated tests, and adapted the implementation as I learned more about the data.
+AI tools helped with exploring the API, debugging and reviewing possible approaches. I checked suggestions against source documentation and real API responses, revised the data model and missing-value handling, tested repeat ingestion and historical corrections, and verified behavior with SQL queries and automated tests. The resulting implementation and limitations are documented so the work can be inspected independently.
 
-Examples of decisions I investigated and verified include:
+## Data attribution and licence
 
-- Adding coverage and freshness checks after discovering that some stations had very few valid readings and could produce misleading averages.
-- Preserving missing values as `NULL`, not zero, so calculations do not understate pollution.
-- Preventing duplicate measurement keys on repeated runs and handling corrected historical readings.
-- Retaining timestamped JSON snapshots rather than overwriting earlier API responses.
-- Testing the resulting behavior using actual database queries, regression tests and GitHub Actions.
-
-I can explain these design choices, the code behind them and the limitations of the resulting analysis.
-
-The project, its scope and its limitations are explained here so the implementation can be inspected and discussed rather than treated as a black box.
+This information has been obtained from the Environmental Research Group of Imperial College London, using data from the [London Air Quality Network](https://www.londonair.org.uk/). The source data is licensed under the [Open Government Licence, version 2](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/2/). See the [ERG API documentation](https://api.erg.ic.ac.uk/AirQuality/Information/Documentation/pdf) for the source's terms and attribution guidance.
