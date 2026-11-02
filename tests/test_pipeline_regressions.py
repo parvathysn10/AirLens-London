@@ -1,3 +1,4 @@
+
 """Focused regression tests for AirLens extraction, ingestion and daily averages."""
 
 import ast
@@ -15,6 +16,7 @@ from src import transform
 from src.extract import fetch_json
 
 
+# Create synthetic API responses for repeatable tests without network access.
 def write_snapshot(folder, pollutant, value):
     """Create a small LAQN snapshot without making an API request."""
     filepath = folder / f"TEST_{pollutant}_2026-10-01_2026-10-02.json"
@@ -31,6 +33,8 @@ def write_snapshot(folder, pollutant, value):
     return filepath
 
 
+# Confirm that processing the same snapshot twice is idempotent.
+# The second run should not insert or update any measurements.
 def test_reprocessing_unchanged_snapshot_does_not_duplicate_rows(tmp_path):
     snapshot = write_snapshot(tmp_path, "NO2", 12.5)
     con = duckdb.connect(":memory:")
@@ -48,6 +52,8 @@ def test_reprocessing_unchanged_snapshot_does_not_duplicate_rows(tmp_path):
         con.close()
 
 
+# Confirm that the composite measurement key includes the pollutant code.
+# Different pollutants at the same station and hour must remain separate.
 def test_three_pollutants_stay_separate_at_same_station_and_hour(tmp_path):
     snapshots = [write_snapshot(tmp_path, code, value) for code, value in
                  [("NO2", 10), ("PM25", 20), ("PM10", 30)]]
@@ -67,6 +73,8 @@ def test_three_pollutants_stay_separate_at_same_station_and_hour(tmp_path):
         con.close()
 
 
+# Simulate a connection failure and check that extraction reports the
+# failed endpoint rather than silently continuing with incomplete data.
 def test_api_failure_reports_url_and_stops():
     with patch("src.extract.requests.Session") as mock_session:
         session = mock_session.return_value.__enter__.return_value
@@ -76,6 +84,8 @@ def test_api_failure_reports_url_and_stops():
         assert "test-endpoint" in str(exc.value)
 
 
+# Extract the daily-average calculation function without launching Streamlit.
+# Parsing the source allows its calculation logic to be tested independently.
 def daily_average_function():
     """Load only the dashboard function, avoiding Streamlit page startup."""
     source = Path(__file__).resolve().parents[1] / "app.py"
@@ -89,6 +99,8 @@ def daily_average_function():
     return namespace["calculate_daily_averages"]
 
 
+# Test the minimum daily data coverage rule at its boundary.
+# Seventeen valid hours are insufficient; eighteen are accepted.
 def test_daily_average_requires_at_least_18_valid_hours():
     calculate = daily_average_function()
     times = pd.date_range("2026-10-01", periods=24, freq="h")
@@ -106,6 +118,8 @@ def test_daily_average_requires_at_least_18_valid_hours():
     assert rows.loc["B", "daily_average"] == pytest.approx(20.0)
 
 
+# Exclude the current incomplete day from daily-average comparisons.
+# Only the fully completed 1 October period should be returned.
 def test_daily_averages_exclude_unfinished_day():
     calculate = daily_average_function()
     times = pd.date_range("2026-10-01", periods=24, freq="h")
