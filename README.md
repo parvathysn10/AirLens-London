@@ -369,6 +369,7 @@ I used AI as a development tool to help understand the LAQN API structure, troub
 - I ensured missing measurements were preserved as `NULL` rather than zero, so they would not artificially lower calculated averages.
 - I tested the pipeline using SQL queries, repeat ingestion checks and automated tests, and added GitHub Actions to check the code when changes are pushed.
 
+
 ## Data attribution and licence
 
 This information has been obtained from the Environmental Research Group of Imperial College London, using data from the [London Air Quality Network](https://www.londonair.org.uk/). The source data is licensed under the [Open Government Licence, version 2](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/2/). See the [ERG API documentation](https://api.erg.ic.ac.uk/AirQuality/Information/Documentation/pdf) for the source's terms and attribution guidance.
