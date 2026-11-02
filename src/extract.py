@@ -9,9 +9,11 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 
+# API configuration and local storage for raw responses.
 BASE_URL = "https://api.erg.ic.ac.uk/AirQuality"
 RAW_DIR = Path("data/raw")
 
+# Selected monitoring locations across different London environments.
 STATIONS = {
     "BL0": "Camden - Bloomsbury",
     "BG1": "Barking and Dagenham - Rush Green",
@@ -21,13 +23,17 @@ STATIONS = {
     "LB6": "Lambeth - Streatham Green",
 }
 
+# Pollutants requested for each station.
 POLLUTANTS = ["NO2", "PM25", "PM10"]
 
 
+# HTTP requests and error handling.
 def fetch_json(endpoint):
     """Fetch JSON from LAQN, retrying temporary network/server failures."""
     url = f"{BASE_URL}/{endpoint}"
 
+    # Retry rate limits and temporary server failures.
+    # Backoff reduces repeated requests while the service is struggling.
     retry_strategy = Retry(
         total=3,
         backoff_factor=1,
@@ -42,6 +48,8 @@ def fetch_json(endpoint):
                 HTTPAdapter(max_retries=retry_strategy),
             )
 
+            # Avoid indefinitely waiting for an unresponsive endpoint.
+            # Surface unsuccessful HTTP responses instead of silently continuing.
             response = session.get(url, timeout=60)
             response.raise_for_status()
             return response.json()
@@ -52,6 +60,7 @@ def fetch_json(endpoint):
         ) from error
 
 
+# Measurement response validation.
 def validate_measurement_response(data, site_code, pollutant):
     """
     Check the basic structure of an LAQN measurement response.
@@ -73,6 +82,7 @@ def validate_measurement_response(data, site_code, pollutant):
             "missing RawAQData object"
         )
 
+    # Reject responses that do not match the requested station or pollutant.
     if raw.get("@SiteCode") != site_code:
         raise ValueError(
             f"Unexpected station code in API response: {site_code}"
@@ -85,9 +95,12 @@ def validate_measurement_response(data, site_code, pollutant):
 
     readings = raw.get("Data")
 
+    # No available measurements is different from a malformed API response.
     if readings is None:
         return []
 
+    # The API may return one reading as an object or several as a list.
+    # Normalise both cases to a list for consistent downstream processing.
     if isinstance(readings, dict):
         return [readings]
 
@@ -100,14 +113,17 @@ def validate_measurement_response(data, site_code, pollutant):
     )
 
 
+# Raw JSON storage.
 def save_json(data, filepath):
     """Save an API response as a JSON file."""
+    # Preserve the original response so it can be inspected or reprocessed.
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
     with open(filepath, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=2, ensure_ascii=False)
 
 
+# Monitoring-site metadata extraction.
 def extract_sites():
     """Download London monitoring station metadata."""
     endpoint = "Information/MonitoringSites/GroupName=London/Json"
@@ -124,6 +140,7 @@ def extract_sites():
     print(f"Saved station metadata: {filepath}")
 
 
+# Site-pollutant metadata extraction.
 def extract_site_species():
     """Download information about which pollutants stations monitor."""
     endpoint = "Information/MonitoringSiteSpecies/GroupName=London/Json"
@@ -140,8 +157,10 @@ def extract_site_species():
     print(f"Saved site-pollutant metadata: {filepath}")
 
 
+# Hourly measurement extraction and snapshot management.
 def extract_measurements(start_date, end_date, refresh=False):
     """Download hourly measurements for each station and pollutant."""
+    # Request all 18 station-pollutant combinations (6 stations x 3 pollutants).
     for site_code, site_name in STATIONS.items():
         for pollutant in POLLUTANTS:
             endpoint = (
@@ -150,6 +169,7 @@ def extract_measurements(start_date, end_date, refresh=False):
                 f"StartDate={start_date}/EndDate={end_date}/Json"
             )
 
+            # Identify each snapshot by its station, pollutant and date range.
             filename = (
                 f"{site_code}_{pollutant}_"
                 f"{start_date}_{end_date}.json"
@@ -157,6 +177,8 @@ def extract_measurements(start_date, end_date, refresh=False):
 
             filepath = RAW_DIR / "measurements" / filename
 
+            # Reuse existing snapshots unless fresh data is requested.
+            # This avoids unnecessary API calls during historical reprocessing.
             if filepath.exists() and not refresh:
                 print(f"Already saved, skipping: {filename}")
                 continue
@@ -169,6 +191,8 @@ def extract_measurements(start_date, end_date, refresh=False):
                 data, site_code, pollutant
             )
 
+            # Refreshes create timestamped copies rather than overwriting
+            # earlier snapshots, preserving the history of API responses.
             if refresh:
                 timestamp = datetime.now(timezone.utc).strftime(
                     "%Y%m%dT%H%M%S%fZ"
@@ -189,6 +213,7 @@ def extract_measurements(start_date, end_date, refresh=False):
             )
 
 
+# Command-line configuration and extraction workflow.
 def main():
     parser = argparse.ArgumentParser(
         description="Extract London air quality data"
@@ -214,6 +239,7 @@ def main():
 
     args = parser.parse_args()
 
+    # Validate the date range before making any API requests.
     try:
         start_date = date.fromisoformat(args.start)
         end_date = date.fromisoformat(args.end)
@@ -228,6 +254,7 @@ def main():
     print("Starting AirLens extraction")
     print(f"Period: {start_date} to {end_date} (end exclusive)\n")
 
+    # Collect metadata and measurements for the requested period.
     extract_sites()
     extract_site_species()
     extract_measurements(start_date, end_date, args.refresh)
