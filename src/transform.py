@@ -1,3 +1,4 @@
+
 import hashlib
 import json
 import math
@@ -6,10 +7,12 @@ from pathlib import Path
 
 import duckdb
 
+# Local paths for preserved API responses and the analytical database.
 RAW_DIR = Path("data/raw")
 DB_PATH = Path("data/processed/airlens.duckdb")
 
 
+# Raw data parsing and normalisation.
 def load_json(filepath):
     """Read one saved API response."""
     with open(filepath, "r", encoding="utf-8") as file:
@@ -18,6 +21,7 @@ def load_json(filepath):
 
 def as_list(value):
     """Handle API fields that can be missing, single items or lists."""
+    # Normalise inconsistent API structures before iterating over records.
     if value is None:
         return []
     if isinstance(value, list):
@@ -34,17 +38,20 @@ def parse_date(value):
 
 def parse_number(value):
     """Convert valid numbers to floats and preserve missing values."""
+    # Missing readings remain NULL rather than being interpreted as zero.
     if value in ("", None):
         return None
 
     number = float(value)
 
+    # Reject NaN and infinite values, which would distort calculations.
     if not math.isfinite(number):
         raise ValueError("Value must be a finite number")
 
     return number
 
 
+# Snapshot ordering and change detection.
 def snapshot_priority(filepath):
     """
     Return a sortable priority for a raw measurement snapshot.
@@ -68,15 +75,18 @@ def snapshot_priority(filepath):
 
 def measurement_files():
     """Find snapshots and process older downloads before newer ones."""
+    # Process in a deterministic order so later snapshots take precedence.
     files = list((RAW_DIR / "measurements").glob("*.json"))
     return sorted(files, key=snapshot_priority)
 
 
 def file_hash(filepath):
     """Identify file contents so unchanged snapshots can be skipped."""
+    # A SHA-256 hash detects content changes independently of the filename.
     return hashlib.sha256(filepath.read_bytes()).hexdigest()
 
 
+# DuckDB schema and integrity constraints.
 def create_tables(con):
     """Create the tables needed to store metadata and measurements."""
     # Primary keys prevent duplicate stations and hourly readings.
@@ -104,6 +114,8 @@ def create_tables(con):
         )
     """)
 
+    # A station, pollutant and measurement timestamp uniquely identify
+    # an hourly reading, even when the same hour appears in many snapshots.
     con.execute("""
         CREATE TABLE IF NOT EXISTS measurements (
             site_code VARCHAR,
@@ -114,6 +126,7 @@ def create_tables(con):
         )
     """)
 
+    # Track ingestion outcomes independently of the measurement records.
     con.execute("""
         CREATE TABLE IF NOT EXISTS ingestion_runs (
             run_id VARCHAR PRIMARY KEY,
@@ -125,6 +138,7 @@ def create_tables(con):
         )
     """)
 
+    # Store the last processed content hash for each raw snapshot.
     con.execute("""
         CREATE TABLE IF NOT EXISTS processed_snapshots (
             filepath VARCHAR PRIMARY KEY,
@@ -140,6 +154,7 @@ def create_tables(con):
     """)
 
 
+# Monitoring station metadata loading.
 def load_sites(con):
     """Store station names, locations and opening dates."""
     data = load_json(RAW_DIR / "monitoring_sites.json")
@@ -172,6 +187,7 @@ def load_sites(con):
     print(f"Loaded {len(sites)} monitoring sites")
 
 
+# Station-pollutant relationship loading.
 def load_site_pollutants(con):
     """Store which pollutants each monitoring station measures."""
     data = load_json(RAW_DIR / "site_species.json")
@@ -202,6 +218,7 @@ def load_site_pollutants(con):
     print(f"Loaded {count} site-pollutant records")
 
 
+# Convert raw hourly readings into consistently typed records.
 def read_snapshot(filepath):
     """
     Parse one raw JSON snapshot into measurement records.
@@ -221,6 +238,8 @@ def read_snapshot(filepath):
         try:
             timestamp = reading["@MeasurementDateGMT"]
 
+            # The API timestamps are GMT/UTC; store them consistently
+            # as timezone-naive UTC timestamps in DuckDB.
             measured_at = datetime.strptime(
                 timestamp, "%Y-%m-%d %H:%M:%S"
             )
@@ -241,6 +260,7 @@ def read_snapshot(filepath):
     return records, rejected
 
 
+# Backfill source provenance for measurements stored by older versions.
 def migrate_existing_sources(con, files):
     """
     Initialize source_snapshot for measurements already in DuckDB.
@@ -276,6 +296,8 @@ def migrate_existing_sources(con, files):
         records, _ = read_snapshot(filepath)
 
         for site_code, pollutant_code, measured_at, value in records:
+            # Only match existing rows with the same key and stored value.
+            # NULL-safe comparison also supports missing measurements.
             result = con.execute("""
                 UPDATE measurements
                 SET source_snapshot = ?
@@ -305,6 +327,7 @@ def migrate_existing_sources(con, files):
     print(f"Measurements without a matching source: {remaining}")
 
     if remaining:
+        # Avoid accepting an incomplete provenance migration.
         raise RuntimeError(
             "Some existing measurements could not be matched to "
             "their saved raw snapshots. No changes have been committed. "
@@ -312,8 +335,10 @@ def migrate_existing_sources(con, files):
         )
 
 
+# Incremental ingestion, deduplication and historical corrections.
 def load_measurements(con):
     """Insert new readings and apply corrections from newer snapshots."""
+    # Track new, corrected, unchanged and invalid readings separately.
     counts = {
         "inserted": 0,
         "updated": 0,
@@ -341,6 +366,7 @@ def load_measurements(con):
             WHERE filepath = ?
         """, [relative_path]).fetchone()
 
+        # An unchanged snapshot needs no further parsing or database writes.
         if previous is not None and previous[0] == current_hash:
             skipped_files += 1
             continue
@@ -463,10 +489,12 @@ def load_measurements(con):
     return counts
 
 
+# Transaction management and ingestion reporting.
 def main():
     """Run ingestion as one transaction and print the results."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+    # Assign each ingestion run a unique UTC timestamp-based identifier.
     started_at = datetime.now(timezone.utc)
     run_id = started_at.strftime("%Y%m%dT%H%M%S%fZ")
 
@@ -495,6 +523,7 @@ def main():
             counts["rejected"]
         ])
 
+        # Commit only after every ingestion stage has completed.
         con.execute("COMMIT")
 
         print("\nINGESTION SUMMARY")
@@ -516,6 +545,7 @@ def main():
             print(f"{table}: {count} rows")
 
     except Exception:
+        # Roll back partial changes if any stage fails.
         con.execute("ROLLBACK")
         raise
 
