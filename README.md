@@ -132,6 +132,22 @@ flowchart TD
 
 `run_pipeline.py` orchestrates extraction, transformation and a separate SQL analysis for **each of the three pollutants**. If a required script fails, the pipeline stops rather than reporting a successful run.
 
+### Code walkthrough: files in presentation order
+
+The main files are listed below in the order they are used, making it easier to follow the pipeline from data collection to the final dashboard.
+
+| Step | File | What it does |
+|---|---|---|
+| 1 | [`run_pipeline.py`](run_pipeline.py) | Coordinates the pipeline and runs each stage in sequence. |
+| 2 | [`src/extract.py`](src/extract.py) | Retrieves monitoring data from the LAQN API and saves raw JSON snapshots. |
+| 3 | [`src/transform.py`](src/transform.py) | Validates and processes the data, handles duplicates and historical corrections, and loads DuckDB. |
+| 4 | [`src/analyse.py`](src/analyse.py) | Uses SQL to calculate station averages, valid readings and completeness. |
+| 5 | [`app.py`](app.py) | Displays the results in the interactive Streamlit dashboard. |
+| 6 | [`scripts/verify_database.py`](scripts/verify_database.py) | Checks stored measurements, duplicate keys and database history. |
+| 7 | [`tests/`](tests/) | Contains automated tests for data quality and pipeline behavior. |
+
+Supporting scripts in `src/` were used for API exploration, data-quality checks and development.
+
 ### Step 1: Extract and preserve source data
 
 `src/extract.py` requests site metadata, site-pollutant metadata and hourly readings. It validates API responses, uses request timeouts and retries for temporary failures, and saves the original responses as JSON for inspection and reprocessing.
@@ -251,7 +267,6 @@ The dashboard can show the following **WHO 2021 24-hour guideline references** o
 Daily means are shown only for **completed UTC days with at least 18 valid hourly readings**. The 18-hour rule is a project-defined data-coverage requirement. WHO's 24-hour references are **not hourly limits**; their guideline framework considers the **99th percentile of daily means over a year**, so a single day's value should not be treated as a simple regulatory pass/fail or personal safety assessment.
 
 Sources: [WHO air-quality guideline table](https://www.ncbi.nlm.nih.gov/books/NBK574591/table/ch3.tab21/) · [LAQN](https://www.londonair.org.uk/)
-
 
 ## 04. How to run it
 
@@ -434,7 +449,6 @@ The existing GitHub Actions workflow automatically runs the project's tests when
 
 It currently checks code behavior only. It does not automatically collect new LAQN measurements, update the stored database or deploy the Streamlit dashboard. These are possible future improvements.
 
-
 ## 05. What I would do next
 
 ### Current limitations
@@ -456,7 +470,6 @@ It currently checks code behavior only. It does not automatically collect new LA
 5. **More stations and a map:** Add geographical comparisons and longer seasonal trends, while distinguishing roadside from background locations.
 6. **Better monitoring and storage:** Track data delays and unusually low coverage, and archive old snapshots while preserving provenance.
 
-
 ## 06. Where AI helped
 
 I used AI as a development tool to help understand the LAQN API structure, troubleshoot Python and DuckDB errors, and explore approaches to data cleaning, modelling and testing. I checked suggestions against the actual API responses and database results, then adapted and improved the implementation as the project developed. For example:
@@ -466,7 +479,6 @@ I used AI as a development tool to help understand the LAQN API structure, troub
 - I added timestamped raw JSON snapshots to preserve earlier API responses when refreshing data, rather than overwriting them.
 - I ensured missing measurements were preserved as `NULL` rather than zero, so they would not artificially lower calculated averages.
 - I tested the pipeline using SQL queries, repeat ingestion checks and automated tests, and added GitHub Actions to check the code when changes are pushed.
-
 
 ## Data attribution and licence
 
