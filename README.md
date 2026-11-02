@@ -358,9 +358,16 @@ Rebuilding from the saved snapshots is different from downloading new data from 
 5. **More stations and a map:** Add geographical comparisons and longer seasonal trends, while distinguishing roadside from background locations.
 6. **Better monitoring and storage:** Track data delays and unusually low coverage, and archive old snapshots while preserving provenance.
 
-## 06. AI assistance and verification
 
-AI tools helped with exploring the API, debugging and reviewing possible approaches. I checked suggestions against source documentation and real API responses, revised the data model and missing-value handling, tested repeat ingestion and historical corrections, and verified behavior with SQL queries and automated tests. The resulting implementation and limitations are documented so the work can be inspected independently.
+## 06. Where AI helped
+
+I used AI as a development tool to help understand the LAQN API structure, troubleshoot Python and DuckDB errors, and explore approaches to data cleaning, modelling and testing. I checked suggestions against the actual API responses and database results, then adapted and improved the implementation as the project developed. For example:
+
+- I added data completeness and freshness checks after discovering that some monitoring stations had very few valid readings, making their averages potentially misleading.
+- I improved the database logic to prevent duplicate measurements when rerunning the pipeline and to handle corrections to historical readings.
+- I added timestamped raw JSON snapshots to preserve earlier API responses when refreshing data, rather than overwriting them.
+- I ensured missing measurements were preserved as `NULL` rather than zero, so they would not artificially lower calculated averages.
+- I tested the pipeline using SQL queries, repeat ingestion checks and automated tests, and added GitHub Actions to check the code when changes are pushed.
 
 ## Data attribution and licence
 
