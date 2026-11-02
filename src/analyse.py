@@ -16,6 +16,9 @@ def analyse_stations(con, start_date, end_date, pollutant):
     Completeness is the percentage of expected hourly readings
     that contain a valid numerical measurement.
     """
+
+    # Join measurements to station metadata so results include names and locations.
+    # COUNT(*) includes missing readings, but COUNT(m.value) ignores NULL values.
     query = """
         WITH station_readings AS (
             SELECT
@@ -66,6 +69,8 @@ def analyse_stations(con, start_date, end_date, pollutant):
             site_name ASC
     """
 
+    # Question marks safely insert the dates and pollutant into the SQL query.
+    # fetchdf() returns the results as a pandas DataFrame.
     return con.execute(
         query,
         [
@@ -81,6 +86,7 @@ def analyse_stations(con, start_date, end_date, pollutant):
 
 
 def main():
+    # Read the date range and pollutant from the command line.
     parser = argparse.ArgumentParser(
         description="Analyse historical London air quality measurements"
     )
@@ -105,6 +111,7 @@ def main():
 
     args = parser.parse_args()
 
+    # Check the dates before querying the database.
     try:
         start_date = date.fromisoformat(args.start)
         end_date = date.fromisoformat(args.end)
@@ -126,6 +133,7 @@ def main():
             "Database not found. Run python src/transform.py first."
         )
 
+    # Open DuckDB in read-only mode because analysis should not change stored data.
     con = duckdb.connect(str(DB_PATH), read_only=True)
 
     try:
@@ -149,6 +157,7 @@ def main():
         else:
             print(results.to_string(index=False))
 
+            # Highlight stations that have no valid readings in the period.
             stations_without_valid_data = results[
                 results["valid_hours"] == 0
             ]
