@@ -252,90 +252,188 @@ Daily means are shown only for **completed UTC days with at least 18 valid hourl
 
 Sources: [WHO air-quality guideline table](https://www.ncbi.nlm.nih.gov/books/NBK574591/table/ch3.tab21/) · [LAQN](https://www.londonair.org.uk/)
 
+
 ## 04. How to run it
 
-**Requirements:** Python (the GitHub Actions test workflow uses **3.12**; local development has also used **3.14**), Git and internet access for new API downloads. No LAQN API key is required for this project.
+AirLens London can be run locally using Python, DuckDB and Streamlit. The pipeline collects measurements from the LAQN API, processes them into a local database and produces SQL analysis that can be explored through the dashboard.
 
-### 1. Clone and install
+**Requirements:** Python, Git and an internet connection for API requests. GitHub Actions uses Python 3.12, while local development has also used Python 3.14. No API key is required.
+
+### Step 1. Set up the project (first time only)
+
+Clone the repository:
 
 ```powershell
 git clone https://github.com/parvathysn10/AirLens-London.git
 cd AirLens-London
+```
+
+Create and activate a virtual environment:
+
+```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
+```
+
+Install the dependencies:
+
+```powershell
 python -m pip install -r requirements.txt
 ```
 
-### 2. Run the pipeline
+If the project is already set up and the terminal shows `(.venv)`, skip this step.
 
-For the fixed October 2026 reporting period:
+### Step 2. Run the automated tests
 
 ```powershell
-python run_pipeline.py --start 2026-10-01 --end 2026-11-01
+python -m pytest -q
 ```
 
-The `--end` date is **exclusive**. Without date arguments, the current script uses its original historical default of **1–24 October 2026** (end date `2026-10-25`). For a specific period, pass both dates explicitly.
+The latest previously verified local run passed 12 pytest tests. These cover:
 
-To fetch fresh measurements for **today and the previous two UTC days**:
+- API errors, invalid responses and measurement validation.
+- Data completeness, missing values and freshness calculations.
+- Repeat ingestion, duplicate prevention and updated historical readings.
+- Daily summaries and support for NO2, PM25 and PM10.
+
+The GitHub Actions workflow at `.github/workflows/tests.yml` also runs automated tests using Python 3.12 on pushes and pull requests.
+
+### Step 3. Inspect the existing database
+
+```powershell
+python scripts/verify_database.py
+```
+
+This read-only verification script reports:
+
+- Whether any duplicate measurement keys exist.
+- The earliest and latest stored NO2 readings for each station.
+- The number of stored and valid NO2 readings by station.
+- Whether historical measurements exist for 8 October 2026.
+- The total number of measurement records.
+
+Record the total row count before running the pipeline so you can compare it afterward.
+
+### Step 4. Retrieve the latest measurements
 
 ```powershell
 python run_pipeline.py --latest
 ```
 
-To request fresh versions of a historical period without overwriting earlier raw snapshots:
+This command runs the complete pipeline for today and the previous two UTC days, using an exclusive end date of tomorrow.
+
+The pipeline:
+
+1. Calls `src/extract.py` to request fresh LAQN data and save timestamped raw JSON snapshots.
+2. Calls `src/transform.py` to validate and load the data into DuckDB.
+3. Calls `src/analyse.py` separately for NO2, PM25 and PM10 to calculate station-level statistics.
+
+The pipeline stops if a required stage fails.
+
+**Note:** `--latest` automatically requests fresh snapshots. It does not need to be combined with `--refresh`. This command is run manually; data collection is not currently scheduled.
+
+### Step 5. Run the pipeline again to check repeatability
 
 ```powershell
-python run_pipeline.py --start 2026-10-01 --end 2026-11-01 --refresh
+python run_pipeline.py --latest
 ```
 
-**Important:** `--latest` is a **manual command**, not a scheduled job. New data will only appear if the LAQN API has published it.
+Running the same pipeline twice should not create duplicate measurement records.
 
-### Run each pipeline stage separately
+Each measurement is identified by its station code, pollutant code and timestamp. If an incoming measurement already exists, the transformation logic checks whether it should remain unchanged or be updated with a newer source value.
 
-For troubleshooting, each script can be run independently:
+New measurements may be inserted, and corrected historical values may be updated, but the same measurement key should not be stored twice.
+
+### Step 6. Verify the database after rerunning
 
 ```powershell
-python src/extract.py --start 2026-10-01 --end 2026-11-01
-python src/transform.py
-python src/analyse.py --start 2026-10-01 --end 2026-11-01 --pollutant NO2
+python scripts/verify_database.py
 ```
 
-The analysis script accepts `NO2`, `PM25` or `PM10`. Running a stage separately helps isolate API extraction, database ingestion and SQL-analysis problems.
+Compare the results with Step 3.
 
-### 3. Launch the dashboard
+The key check is:
+
+```text
+Duplicate keys: 0
+PASS: No duplicate measurement keys.
+```
+
+The total row count may increase if the API has supplied genuinely new measurements. An increase does not mean duplicates have been created.
+
+If the same data was already stored and no corrections or new measurements were returned, the total row count should remain unchanged.
+
+### Step 7. Launch the dashboard
 
 ```powershell
 python -m streamlit run app.py
 ```
 
-Open the local URL printed in the terminal. After running a data refresh, rerun or reload the dashboard to see the updated database.
+Open the local address shown in the terminal, usually `http://localhost:8501`.
 
-### 4. Run automated tests and verify the database
+In the dashboard, users can:
+
+- Select NO2, PM25 or PM10 and explore monitoring stations.
+- View the latest stored valid reading and its timestamp.
+- Explore hourly and daily historical trends.
+- Compare measurements between selected stations.
+- Inspect missing readings, completeness, freshness and monitoring status.
+- View WHO 2021 daily guideline references where applicable.
+
+The dashboard reads the local DuckDB database. It does not automatically contact the API, so reload it after collecting new data.
+
+### Optional: Run a specific historical period
+
+To collect and analyse the full October 2026 period:
 
 ```powershell
-python -m pip install pytest
-python -m pytest -q
-python scripts/verify_database.py
+python run_pipeline.py --start 2026-10-01 --end 2026-11-01
 ```
 
-**Latest local check:** **12 pytest tests passed**. These check the main behaviors rather than just whether the scripts run:
+The end date is exclusive. This requests data from 1 October up to, but not including, 1 November.
 
-- **API errors and invalid values:** Fail safely and avoid treating bad measurements as valid readings.
-- **Coverage and freshness:** Classify missing and older measurements correctly.
-- **Repeat runs and snapshot ordering:** Do not duplicate readings; apply newer corrections appropriately.
-- **Daily summaries and pollutants:** Calculate daily averages and support NO₂, PM₂.₅ and PM₁₀.
+Without date arguments, the pipeline currently defaults to 1–24 October 2026.
 
-Additional standalone checks are included in `tests/`; the count of 12 refers specifically to tests collected by pytest.
+To request new versions of the October measurements, while preserving earlier raw snapshots:
 
-**Continuous integration:** `.github/workflows/tests.yml` runs the automated tests using **GitHub Actions** on pushes and pull requests with Python 3.12. This tests code changes on a separate machine. It **does not** schedule API collection, refresh the database or deploy the dashboard.
+```powershell
+python run_pipeline.py --start 2026-10-01 --end 2026-11-01 --refresh
+```
 
-The processed DuckDB database is generated locally and is not intended to be committed. It can be rebuilt from available saved raw snapshots using:
+Timestamped snapshots allow earlier responses to be retained and historical corrections to be processed.
+
+### Optional: Run individual pipeline stages
+
+For troubleshooting, the stages can be run separately.
+
+Extract historical measurements:
+
+```powershell
+python src/extract.py --start 2026-10-01 --end 2026-11-01
+```
+
+Transform saved raw snapshots into DuckDB:
 
 ```powershell
 python src/transform.py
 ```
 
-Rebuilding from the saved snapshots is different from downloading new data from LAQN.
+Analyse NO2 measurements using SQL:
+
+```powershell
+python src/analyse.py --start 2026-10-01 --end 2026-11-01 --pollutant NO2
+```
+
+The analysis script also accepts `PM25` and `PM10`.
+
+The processed DuckDB database is stored locally and is not intended to be committed to GitHub. It can be rebuilt from available saved raw snapshots by running `python src/transform.py`.
+
+### Continuous integration
+
+The existing GitHub Actions workflow automatically runs the project's tests when code is pushed or a pull request is opened.
+
+It currently checks code behavior only. It does not automatically collect new LAQN measurements, update the stored database or deploy the Streamlit dashboard. These are possible future improvements.
+
 
 ## 05. What I would do next
 
