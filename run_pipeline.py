@@ -6,11 +6,15 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 
+# Resolve paths relative to the project directory, regardless of where
+# the pipeline command is launched.
 PROJECT_DIR = Path(__file__).resolve().parent
 
+# Run the same analysis workflow for each supported pollutant.
 POLLUTANTS = ["NO2", "PM25", "PM10"]
 
 
+# Execute individual pipeline stages using the current Python environment.
 def run_script(script, arguments=None):
     """Run a pipeline script and stop if it fails."""
     command = [sys.executable, str(PROJECT_DIR / script)]
@@ -27,6 +31,8 @@ def run_script(script, arguments=None):
             check=True,
         )
     except subprocess.CalledProcessError as error:
+        # Stop immediately if a stage fails to avoid analysing
+        # incomplete or potentially outdated data.
         print(
             f"\nPipeline failed while running {script} "
             f"(exit code {error.returncode})",
@@ -36,6 +42,7 @@ def run_script(script, arguments=None):
         raise SystemExit(error.returncode)
 
 
+# Configure the date range and execute the full data pipeline.
 def main():
     parser = argparse.ArgumentParser(
         description="Run the AirLens London data pipeline"
@@ -67,6 +74,8 @@ def main():
 
     args = parser.parse_args()
 
+    # Latest mode uses a rolling three-day window in UTC.
+    # Re-fetching recent measurements also allows late updates to be captured.
     if args.latest:
         if args.start or args.end:
             parser.error(
@@ -94,6 +103,7 @@ def main():
                 "Dates must be valid and use YYYY-MM-DD format"
             )
 
+    # An exclusive end date avoids ambiguity between adjacent date windows.
     if end_date <= start_date:
         parser.error("End date must be after start date")
 
@@ -120,11 +130,15 @@ def main():
     if args.refresh or args.latest:
         extract_args.append("--refresh")
 
+    # Stage 1: Download and preserve raw API responses.
     # Extract and store the measurements before analysing them.
     run_script("src/extract.py", extract_args)
 
+    # Stage 2: Validate, transform and load data into DuckDB.
+    # The transformation stage handles repeated or updated measurements.
     run_script("src/transform.py")
 
+    # Stage 3: Generate SQL-based summaries for each pollutant.
     # Run the SQL analysis separately for each pollutant.
     for pollutant in POLLUTANTS:
         run_script(
