@@ -17,7 +17,7 @@ I am interested in data engineering because it combines technical problem-solvin
 
 I built AirLens London to explore this interest through an end-to-end data engineering project, from collecting and validating air quality measurements to data modelling, SQL analysis and creating an interactive dashboard.
 
-## 01. What AirLens does and who it is for
+## 01. What I built and who for
 
 Air pollution can vary by location and over time. Someone comparing places near their home, regular commute or workplace may want to know whether pollution was consistently higher at one monitoring location, whether there were unusual days, or how levels changed over a week or month. Historical measurements help reveal these patterns rather than relying on a single reading. They do not measure any individual's personal exposure or predict the air quality of a particular journey.
 
@@ -62,7 +62,7 @@ Camden's reported average is lower than Brent's, but Camden has valid readings f
 
 These figures are a reproducible example from a particular data snapshot; later LAQN corrections or refreshed periods may change them.
 
-## 02. Data source and scope
+## 02. The data
 
 **Source:** [London Air Quality Network](https://www.londonair.org.uk/), operated by Imperial College London's Environmental Research Group.
 
@@ -111,7 +111,7 @@ A station that returns only a small number of valid hours may have an average th
 
 A station's completeness is a **data availability metric**, not a direct measurement of sensor uptime or official LAQN quality assurance. AirLens preserves unavailable values as `NULL` rather than turning them into zeros.
 
-## 03. How AirLens works
+## 03. How it works
 
 ### End-to-end architecture
 
@@ -252,7 +252,7 @@ Daily means are shown only for **completed UTC days with at least 18 valid hourl
 
 Sources: [WHO air-quality guideline table](https://www.ncbi.nlm.nih.gov/books/NBK574591/table/ch3.tab21/) · [LAQN](https://www.londonair.org.uk/)
 
-## 04. Run the project locally
+## 04. How to run it
 
 **Requirements:** Python (the GitHub Actions test workflow uses **3.12**; local development has also used **3.14**), Git and internet access for new API downloads. No LAQN API key is required for this project.
 
@@ -337,7 +337,7 @@ python src/transform.py
 
 Rebuilding from the saved snapshots is different from downloading new data from LAQN.
 
-## 05. Limitations and future improvements
+## 05. What I would do next
 
 ### Current limitations
 
