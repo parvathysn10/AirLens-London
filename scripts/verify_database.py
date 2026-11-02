@@ -2,6 +2,7 @@
 from pathlib import Path
 import duckdb
 
+# Open the existing DuckDB database without modifying its contents.
 DB_PATH = Path("data/processed/airlens.duckdb")
 
 if not DB_PATH.exists():
@@ -10,6 +11,8 @@ if not DB_PATH.exists():
 con = duckdb.connect(str(DB_PATH), read_only=True)
 
 try:
+    # Check the natural key used to identify each hourly measurement.
+    # Repeated pipeline runs should not create duplicate records.
     print("\n1. DUPLICATE MEASUREMENT KEYS")
     duplicates = con.execute("""
         SELECT
@@ -30,6 +33,9 @@ try:
     else:
         print("PASS: No duplicate measurement keys.")
 
+    # Check the historical range and data completeness for each station.
+    # COUNT(*) includes rows with missing values, while COUNT(value)
+    # counts only measurements containing a non-NULL concentration.
     print("\n2. DATABASE HISTORY BY STATION")
     rows = con.execute("""
         SELECT
@@ -47,6 +53,8 @@ try:
     for row in rows:
         print(row)
 
+    # Verify that a previously collected historical date remains available
+    # after subsequent pipeline runs and recent-data refreshes.
     print("\n3. CHECK 8 OCTOBER WAS ALREADY STORED")
     rows = con.execute("""
         SELECT
@@ -67,6 +75,8 @@ try:
     else:
         print("No measurements found for 8 October.")
 
+    # Report the total number of stored measurements across all stations
+    # and pollutants. Compare this with previous runs to inspect growth.
     print("\n4. TOTAL MEASUREMENT ROWS")
     total = con.execute(
         "SELECT COUNT(*) FROM measurements"
@@ -75,4 +85,5 @@ try:
     print(f"Total rows: {total}")
 
 finally:
+    # Always release the database connection, including after SQL errors.
     con.close()
